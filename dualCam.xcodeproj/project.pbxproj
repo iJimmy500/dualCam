@@ -1,0 +1,345 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		161130642FC7D87E00927954 /* deployment-update-guide.md in Resources */ = {isa = PBXBuildFile; fileRef = 161130632FC7D87E00927954 /* deployment-update-guide.md */; };
+		50FB2BDDAAE041969F1C143B /* CameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41FDDFE28656483991706D74 /* CameraView.swift */; };
+		5FF873A1AB214EEDA15E239B /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E1F9CB4D3BA4C7E9F62960C /* MediaItem.swift */; };
+		6BD749D7646F4F5A9C051740 /* CaptureManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 628F171DE9F0493AB71FD8F4 /* CaptureManager.swift */; };
+		772ED22CA026492F9CED1F32 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 24F315984FEE4EACBC1417DD /* Assets.xcassets */; };
+		87AF6E8DF034473FB3767A78 /* PreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 272B97E50CA3409AAC897DDB /* PreviewView.swift */; };
+		8963BD5F4F5046F2889FAE70 /* GalleryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 080BD05C90AE49B1B1CE9118 /* GalleryView.swift */; };
+		8BB699B4567246ED9AC27D17 /* dualCamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B1093D8AA44E548FA15208 /* dualCamApp.swift */; };
+		949D6869A4094BA296FD3829 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F48F1E43178C42B284964AE7 /* ContentView.swift */; };
+		A72B554CEA674DC7A67ABF67 /* MediaDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 616AE7B3601D4A058E6657C4 /* MediaDetailView.swift */; };
+		B56E665D42264B82B93BF514 /* VideoRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDF249D8AFF480DA0D4F73A /* VideoRecorder.swift */; };
+		AA1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift */; };
+		CC1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift */; };
+		EE1E2F3A4B5C6D7E8F9A0B1C /* CapturePreviewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1F2A3B4C5D6E7F8A9B0C1D /* CapturePreviewModal.swift */; };
+		11223344556677889900AABB /* QuickSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDDEEFF00112233445566 /* QuickSettingsPanel.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		080BD05C90AE49B1B1CE9118 /* GalleryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryView.swift; sourceTree = "<group>"; };
+		BB1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		DD1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		FF1F2A3B4C5D6E7F8A9B0C1D /* CapturePreviewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePreviewModal.swift; sourceTree = "<group>"; };
+		AABBCCDDEEFF00112233445566 /* QuickSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickSettingsPanel.swift; sourceTree = "<group>"; };
+		0CDF249D8AFF480DA0D4F73A /* VideoRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRecorder.swift; sourceTree = "<group>"; };
+		161130622FC7D7CF00927954 /* iOS18-Deployment.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "iOS18-Deployment.md"; sourceTree = "<group>"; };
+		161130632FC7D87E00927954 /* deployment-update-guide.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "deployment-update-guide.md"; sourceTree = "<group>"; };
+		18706739AC1D4BF3903FD40C /* dualCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = dualCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		24F315984FEE4EACBC1417DD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		272B97E50CA3409AAC897DDB /* PreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewView.swift; sourceTree = "<group>"; };
+		36B1093D8AA44E548FA15208 /* dualCamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = dualCamApp.swift; sourceTree = "<group>"; };
+		41FDDFE28656483991706D74 /* CameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraView.swift; sourceTree = "<group>"; };
+		616AE7B3601D4A058E6657C4 /* MediaDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaDetailView.swift; sourceTree = "<group>"; };
+		628F171DE9F0493AB71FD8F4 /* CaptureManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureManager.swift; sourceTree = "<group>"; };
+		9E1F9CB4D3BA4C7E9F62960C /* MediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaItem.swift; sourceTree = "<group>"; };
+		F00719093DB5483CA442CD73 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F48F1E43178C42B284964AE7 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		509A702B9BC74E63A0E6410D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		4B4AC47E2CD24EC8B0A39C2E /* dualCam */ = {
+			isa = PBXGroup;
+			children = (
+				36B1093D8AA44E548FA15208 /* dualCamApp.swift */,
+				F48F1E43178C42B284964AE7 /* ContentView.swift */,
+				9E1F9CB4D3BA4C7E9F62960C /* MediaItem.swift */,
+				628F171DE9F0493AB71FD8F4 /* CaptureManager.swift */,
+				0CDF249D8AFF480DA0D4F73A /* VideoRecorder.swift */,
+				272B97E50CA3409AAC897DDB /* PreviewView.swift */,
+				41FDDFE28656483991706D74 /* CameraView.swift */,
+				080BD05C90AE49B1B1CE9118 /* GalleryView.swift */,
+				BB1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift */,
+				DD1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift */,
+				FF1F2A3B4C5D6E7F8A9B0C1D /* CapturePreviewModal.swift */,
+				AABBCCDDEEFF00112233445566 /* QuickSettingsPanel.swift */,
+				616AE7B3601D4A058E6657C4 /* MediaDetailView.swift */,
+				24F315984FEE4EACBC1417DD /* Assets.xcassets */,
+				F00719093DB5483CA442CD73 /* Info.plist */,
+				161130632FC7D87E00927954 /* deployment-update-guide.md */,
+			);
+			path = dualCam;
+			sourceTree = "<group>";
+		};
+		8A26A248D4EB4893B64B0CC3 = {
+			isa = PBXGroup;
+			children = (
+				4B4AC47E2CD24EC8B0A39C2E /* dualCam */,
+				F08CFFF6CB934136ACACC415 /* Products */,
+				161130622FC7D7CF00927954 /* iOS18-Deployment.md */,
+			);
+			sourceTree = "<group>";
+		};
+		F08CFFF6CB934136ACACC415 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				18706739AC1D4BF3903FD40C /* dualCam.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2E7A08B3CCF04F6484A19938 /* dualCam */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9B3E102B6FCF4666B31C0783 /* Build configuration list for PBXNativeTarget "dualCam" */;
+			buildPhases = (
+				36B07772A3524F3BBC60B6F2 /* Sources */,
+				509A702B9BC74E63A0E6410D /* Frameworks */,
+				DE0B531709794592A8C31ECE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = dualCam;
+			productName = dualCam;
+			productReference = 18706739AC1D4BF3903FD40C /* dualCam.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		16B1C28DD54844AF9E30A88F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					2E7A08B3CCF04F6484A19938 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = 1C28301A3858424BAABA3D68 /* Build configuration list for PBXProject "dualCam" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 8A26A248D4EB4893B64B0CC3;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2E7A08B3CCF04F6484A19938 /* dualCam */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		DE0B531709794592A8C31ECE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				772ED22CA026492F9CED1F32 /* Assets.xcassets in Resources */,
+				161130642FC7D87E00927954 /* deployment-update-guide.md in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		36B07772A3524F3BBC60B6F2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8BB699B4567246ED9AC27D17 /* dualCamApp.swift in Sources */,
+				949D6869A4094BA296FD3829 /* ContentView.swift in Sources */,
+				5FF873A1AB214EEDA15E239B /* MediaItem.swift in Sources */,
+				6BD749D7646F4F5A9C051740 /* CaptureManager.swift in Sources */,
+				B56E665D42264B82B93BF514 /* VideoRecorder.swift in Sources */,
+				87AF6E8DF034473FB3767A78 /* PreviewView.swift in Sources */,
+				50FB2BDDAAE041969F1C143B /* CameraView.swift in Sources */,
+				8963BD5F4F5046F2889FAE70 /* GalleryView.swift in Sources */,
+				A72B554CEA674DC7A67ABF67 /* MediaDetailView.swift in Sources */,
+				AA1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift in Sources */,
+				CC1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift in Sources */,
+				EE1E2F3A4B5C6D7E8F9A0B1C /* CapturePreviewModal.swift in Sources */,
+				11223344556677889900AABB /* QuickSettingsPanel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0E1E5274D2F44B989712EA50 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSET_CATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSET_CATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = dualCam/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.dualCam;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		3C9B6606634E43089F04A333 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = GL7U945C5T;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		3DB00F28FCFB4676AAE8D707 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = GL7U945C5T;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+			};
+			name = Debug;
+		};
+		9552429AAEAB43338F5FCA6C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSET_CATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSET_CATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = dualCam/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.dualCam;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1C28301A3858424BAABA3D68 /* Build configuration list for PBXProject "dualCam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3DB00F28FCFB4676AAE8D707 /* Debug */,
+				3C9B6606634E43089F04A333 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9B3E102B6FCF4666B31C0783 /* Build configuration list for PBXNativeTarget "dualCam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9552429AAEAB43338F5FCA6C /* Debug */,
+				0E1E5274D2F44B989712EA50 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 16B1C28DD54844AF9E30A88F /* Project object */;
+}
