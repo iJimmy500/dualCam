@@ -822,10 +822,24 @@ struct CameraView: View {
                         .foregroundStyle(.white)
                         .tracking(1.2)
                     
-                    Text(capture.isProcessingVideo ? "Processing video…" : "Starting cameras…")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.48))
-                        .padding(.top, 2)
+                    if capture.isProcessingVideo {
+                        ProcessingProgressView(
+                            progress: capture.processingProgress,
+                            statusMessage: capture.processingStatusMessage.isEmpty ? "Processing video…" : capture.processingStatusMessage,
+                            isConfiguring: false
+                        )
+                        .padding(.top, 12)
+                    } else {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(1.2)
+                            Text("Starting cameras…")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.48))
+                        }
+                        .padding(.top, 12)
+                    }
                 }
                 
                 Spacer()
@@ -912,16 +926,16 @@ private struct CaptureSettingsSyncModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onAppear { syncAll() }
-            .onChange(of: settings.layoutMode) { _, v in capture.layoutMode = v }
-            .onChange(of: settings.aspectRatio) { _, v in capture.aspectRatio = v }
-            .onChange(of: settings.pipFrameStyle) { _, v in capture.pipFrameStyle = v }
-            .onChange(of: settings.pipFrameColor) { _, v in capture.pipFrameColor = v }
-            .onChange(of: settings.pipShape) { _, v in capture.pipShape = v }
-            .onChange(of: settings.showWatermark) { _, v in capture.showWatermark = v }
-            .onChange(of: settings.liveMode) { _, v in capture.isLiveModeActive = v }
-            .onChange(of: settings.videoQuality) { _, v in capture.videoQuality = v }
-            .onChange(of: settings.autoSaveRawFeeds) { _, v in capture.autoSaveRawFeeds = v }
-            .onChange(of: settings.screenAlwaysOn) { _, v in UIApplication.shared.isIdleTimerDisabled = v }
+            // Watch raw @AppStorage keys — computed wrappers are not tracked by onChange.
+            .onChange(of: settings.layoutModeRaw)    { _, _ in capture.layoutMode      = settings.layoutMode }
+            .onChange(of: settings.aspectRatioRaw)   { _, _ in capture.aspectRatio     = settings.aspectRatio }
+            .onChange(of: settings.pipFrameStyleRaw) { _, _ in capture.pipFrameStyle   = settings.pipFrameStyle }
+            .onChange(of: settings.pipFrameColorRaw) { _, _ in capture.pipFrameColor   = settings.pipFrameColor }
+            .onChange(of: settings.pipShapeRaw)      { _, _ in capture.pipShape        = settings.pipShape }
+            .onChange(of: settings.liveMode)         { _, v  in capture.isLiveModeActive = v }
+            .onChange(of: settings.videoQualityRaw)  { _, _ in capture.videoQuality    = settings.videoQuality }
+            .onChange(of: settings.autoSaveRawFeeds) { _, v  in capture.autoSaveRawFeeds = v }
+            .onChange(of: settings.screenAlwaysOn)   { _, v  in UIApplication.shared.isIdleTimerDisabled = v }
             .onChange(of: pipWidth)                  { _, w  in capture.pipWidth = w }
             .onChange(of: capture.capturedItems.count) { old, new in
                 guard settings.showCapturePreview, new > old,

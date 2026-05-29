@@ -10,6 +10,9 @@
 		11223344556677889900AABB /* QuickSettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDDEEFF00112233445566 /* QuickSettingsPanel.swift */; };
 		161130642FC7D87E00927954 /* deployment-update-guide.md in Resources */ = {isa = PBXBuildFile; fileRef = 161130632FC7D87E00927954 /* deployment-update-guide.md */; };
 		16A93E062FC9547E0023BC20 /* deployment-update-guide.md in Resources */ = {isa = PBXBuildFile; fileRef = 16A93E052FC9547E0023BC20 /* deployment-update-guide.md */; };
+		16A93E082FC957C00023BC20 /* ProcessingProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A93E072FC957C00023BC20 /* ProcessingProgressView.swift */; };
+		16A93E0A2FC957E90023BC20 /* VideoProcessingActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A93E092FC957E90023BC20 /* VideoProcessingActivity.swift */; };
+		16A93E0C2FC958F00023BC20 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A93E0B2FC958F00023BC20 /* AppLogger.swift */; };
 		50FB2BDDAAE041969F1C143B /* CameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41FDDFE28656483991706D74 /* CameraView.swift */; };
 		5FF873A1AB214EEDA15E239B /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E1F9CB4D3BA4C7E9F62960C /* MediaItem.swift */; };
 		6BD749D7646F4F5A9C051740 /* CaptureManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 628F171DE9F0493AB71FD8F4 /* CaptureManager.swift */; };
@@ -31,6 +34,9 @@
 		161130622FC7D7CF00927954 /* iOS18-Deployment.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "iOS18-Deployment.md"; sourceTree = "<group>"; };
 		161130632FC7D87E00927954 /* deployment-update-guide.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "deployment-update-guide.md"; sourceTree = "<group>"; };
 		16A93E052FC9547E0023BC20 /* deployment-update-guide.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "deployment-update-guide.md"; sourceTree = "<group>"; };
+		16A93E072FC957C00023BC20 /* ProcessingProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessingProgressView.swift; sourceTree = "<group>"; };
+		16A93E092FC957E90023BC20 /* VideoProcessingActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProcessingActivity.swift; sourceTree = "<group>"; };
+		16A93E0B2FC958F00023BC20 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		18706739AC1D4BF3903FD40C /* dualCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = dualCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		24F315984FEE4EACBC1417DD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		272B97E50CA3409AAC897DDB /* PreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewView.swift; sourceTree = "<group>"; };
@@ -78,6 +84,9 @@
 				F00719093DB5483CA442CD73 /* Info.plist */,
 				161130632FC7D87E00927954 /* deployment-update-guide.md */,
 				16A93E052FC9547E0023BC20 /* deployment-update-guide.md */,
+				16A93E072FC957C00023BC20 /* ProcessingProgressView.swift */,
+				16A93E092FC957E90023BC20 /* VideoProcessingActivity.swift */,
+				16A93E0B2FC958F00023BC20 /* AppLogger.swift */,
 			);
 			path = dualCam;
 			sourceTree = "<group>";
@@ -175,10 +184,13 @@
 				6BD749D7646F4F5A9C051740 /* CaptureManager.swift in Sources */,
 				B56E665D42264B82B93BF514 /* VideoRecorder.swift in Sources */,
 				87AF6E8DF034473FB3767A78 /* PreviewView.swift in Sources */,
+				16A93E0A2FC957E90023BC20 /* VideoProcessingActivity.swift in Sources */,
 				50FB2BDDAAE041969F1C143B /* CameraView.swift in Sources */,
 				8963BD5F4F5046F2889FAE70 /* GalleryView.swift in Sources */,
 				A72B554CEA674DC7A67ABF67 /* MediaDetailView.swift in Sources */,
 				AA1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift in Sources */,
+				16A93E082FC957C00023BC20 /* ProcessingProgressView.swift in Sources */,
+				16A93E0C2FC958F00023BC20 /* AppLogger.swift in Sources */,
 				CC1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift in Sources */,
 				EE1E2F3A4B5C6D7E8F9A0B1C /* CapturePreviewModal.swift in Sources */,
 				11223344556677889900AABB /* QuickSettingsPanel.swift in Sources */,

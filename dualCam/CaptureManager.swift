@@ -1,6 +1,32 @@
 import AVFoundation
 import Photos
 import UIKit
+import BackgroundTasks
+import ActivityKit
+
+// Processing task model for background queue
+struct ProcessingTask: Identifiable {
+    let id = UUID()
+    let primaryURL: URL
+    let secondaryURL: URL
+    let isSwapped: Bool
+    let layout: LayoutMode
+    let aspectRatio: AspectRatio?
+    let highFrameRate: Bool
+    let pipWidthFraction: CGFloat
+    let pipPosition: CGPoint
+    let frameStyle: PipFrameStyle
+    let frameColor: PipFrameColor
+    let pipShape: PipShape
+    let quality: VideoQuality
+    let pair: CameraPair
+    var progress: Double = 0.0
+    var status: String = "Queued"
+    
+    enum Status {
+        case queued, processing, completed, failed
+    }
+}
 
 extension AVCaptureDevice.FlashMode {
     var displayName: String {
@@ -30,8 +56,12 @@ class CaptureManager: NSObject, ObservableObject {
     @Published var currentPair: CameraPair = .frontAndBack
     @Published var isSupported = false
     @Published var isConfiguring = false
+    @Published var configurationProgress: Double = 0.0
+    @Published var configurationStatusMessage = ""
     @Published var isSwapped = false
     @Published var isProcessingVideo = false
+    @Published var processingProgress: Double = 0.0
+    @Published var processingStatusMessage = ""
     @Published var errorMessage: String?
     @Published var pipPosition  = CGPoint(x: 0.8, y: 0.2)
     @Published var layoutMode: LayoutMode       = .pip
@@ -83,6 +113,15 @@ class CaptureManager: NSObject, ObservableObject {
     private var videoCaptureAspectRatio: AspectRatio? = nil
     private var videoCaptureHighFrameRate: Bool = false
     @Published var recordingSecondsElapsed: Int = 0
+    
+    // Background processing support
+    @Published var processingQueue: [ProcessingTask] = []
+    @Published var isBackgroundProcessingEnabled = true
+    private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
+    private var currentProcessingTask: ProcessingTask?
+    
+    // Live Activity support
+    private let liveActivityManager = LiveActivityManager()
     static var maxRecordingSeconds: Int {
         UserDefaults.standard.bool(forKey: "extendedRecording") ? 600 : 150
     }
@@ -96,7 +135,6 @@ class CaptureManager: NSObject, ObservableObject {
     private var photoCaptureFrameStyle: PipFrameStyle = .glass
     private var photoCaptureFrameColor: PipFrameColor = .white
     private var photoCapturePipShape: PipShape        = .roundedRect
-    private var photoCaptureShowWatermark: Bool       = true
     private var photoCaptureIsSwapped: Bool           = false
     // Live photo support
     nonisolated(unsafe) private var pendingLivePhotoURL: URL?
@@ -309,12 +347,19 @@ class CaptureManager: NSObject, ObservableObject {
     // MARK: - Session Configuration
 
     private func configureSession(pair: CameraPair) {
+        isConfiguring = true
+        configurationProgress = 0.0
+        configurationStatusMessage = "Initializing camera session..."
+        
         // Create new preview layers for clean configuration
         let newPrimaryLayer = AVCaptureVideoPreviewLayer()
         newPrimaryLayer.videoGravity = .resizeAspectFill
         let newSecondaryLayer = AVCaptureVideoPreviewLayer()
         newSecondaryLayer.videoGravity = .resizeAspectFill
 
+        configurationProgress = 0.1
+        configurationStatusMessage = "Setting up audio session..."
+        
         // Let us manage the audio session ourselves (set up in setupAudioSession).
         // Leaving this at true causes -19224 category conflicts in AVCaptureMultiCamSession.
         session.automaticallyConfiguresApplicationAudioSession = false
@@ -325,11 +370,17 @@ class CaptureManager: NSObject, ObservableObject {
         newPrimaryLayer.setSessionWithNoConnection(session)
         newSecondaryLayer.setSessionWithNoConnection(session)
 
+        configurationProgress = 0.2
+        configurationStatusMessage = "Configuring camera inputs..."
+
         session.beginConfiguration()
         
         // Clean slate - remove all existing connections and I/O
         session.inputs.forEach { session.removeInput($0) }
         session.outputs.forEach { session.removeOutput($0) }
+
+        configurationProgress = 0.3
+        configurationStatusMessage = "Creating camera outputs..."
 
         // Create fresh outputs
         primaryPhotoOutput = AVCapturePhotoOutput()
@@ -338,11 +389,18 @@ class CaptureManager: NSObject, ObservableObject {
         secondaryVideoOutput = AVCaptureVideoDataOutput()
         audioOutput = AVCaptureAudioDataOutput()
 
+        configurationProgress = 0.4
+        configurationStatusMessage = "Finding camera devices..."
+
         guard let (primaryDevice, secondaryDevice) = devicesFor(pair: pair) else {
             session.commitConfiguration()
             errorMessage = "Could not find cameras for this pair on this device."
+            isConfiguring = false
             return
         }
+
+        configurationProgress = 0.5
+        configurationStatusMessage = "Connecting camera inputs..."
 
         do {
             let primaryInput = try AVCaptureDeviceInput(device: primaryDevice)
@@ -351,16 +409,23 @@ class CaptureManager: NSObject, ObservableObject {
             guard session.canAddInput(primaryInput), session.canAddInput(secondaryInput) else {
                 session.commitConfiguration()
                 errorMessage = "Cannot add camera inputs to session."
+                isConfiguring = false
                 return
             }
             session.addInputWithNoConnections(primaryInput)
             session.addInputWithNoConnections(secondaryInput)
+
+            configurationProgress = 0.6
+            configurationStatusMessage = "Setting up microphone..."
 
             if let mic = AVCaptureDevice.default(for: .audio),
                let audioInput = try? AVCaptureDeviceInput(device: mic),
                session.canAddInput(audioInput) {
                 session.addInputWithNoConnections(audioInput)
             }
+
+            configurationProgress = 0.7
+            configurationStatusMessage = "Configuring video outputs..."
 
             primaryVideoOutput.setSampleBufferDelegate(self, queue: videoQueue)
             secondaryVideoOutput.setSampleBufferDelegate(self, queue: videoQueue)
@@ -369,10 +434,16 @@ class CaptureManager: NSObject, ObservableObject {
             primaryVideoOutput.alwaysDiscardsLateVideoFrames   = true
             secondaryVideoOutput.alwaysDiscardsLateVideoFrames = true
 
+            configurationProgress = 0.8
+            configurationStatusMessage = "Adding outputs to session..."
+
             for output in [primaryPhotoOutput, secondaryPhotoOutput,
                            primaryVideoOutput, secondaryVideoOutput, audioOutput] as [AVCaptureOutput] {
                 if session.canAddOutput(output) { session.addOutputWithNoConnections(output) }
             }
+
+            configurationProgress = 0.9
+            configurationStatusMessage = "Establishing camera connections..."
 
             let primaryPort = primaryInput.ports(
                 for: .video,
@@ -416,8 +487,12 @@ class CaptureManager: NSObject, ObservableObject {
         } catch {
             session.commitConfiguration()
             errorMessage = error.localizedDescription
+            isConfiguring = false
             return
         }
+
+        configurationProgress = 0.95
+        configurationStatusMessage = "Enabling live photo capture..."
 
         // Enable live photo capture on the primary output if hardware supports it
         if primaryPhotoOutput.isLivePhotoCaptureSupported {
@@ -425,6 +500,9 @@ class CaptureManager: NSObject, ObservableObject {
         }
 
         session.commitConfiguration()
+
+        configurationProgress = 1.0
+        configurationStatusMessage = "Finalizing camera setup..."
 
         // Update preview layers atomically on main thread
         Task { @MainActor in
@@ -441,9 +519,12 @@ class CaptureManager: NSObject, ObservableObject {
         _recorder             = VideoRecorder()
         _outputLock.unlock()
 
-        isConfiguring = true
         let captureSession = session
         Task.detached(priority: .userInitiated) {
+            await MainActor.run { [weak self] in
+                self?.configurationStatusMessage = "Starting camera..."
+            }
+            
             print("🎬 Starting camera session...")
             captureSession.startRunning()
             let running = captureSession.isRunning
@@ -453,6 +534,8 @@ class CaptureManager: NSObject, ObservableObject {
                 guard let self else { return }
                 self.isSessionRunning = running
                 self.isConfiguring = false
+                self.configurationProgress = 0.0
+                self.configurationStatusMessage = ""
                 if running == false && self.errorMessage == nil {
                     self.errorMessage = "Camera failed to start. Try closing other apps using the camera, or restart your phone."
                 }
@@ -510,7 +593,6 @@ class CaptureManager: NSObject, ObservableObject {
         photoCaptureFrameStyle    = pipFrameStyle
         photoCaptureFrameColor    = pipFrameColor
         photoCapturePipShape      = pipShape
-        photoCaptureShowWatermark = UserDefaults.standard.object(forKey: "showWatermark") as? Bool ?? true
         photoCaptureIsSwapped     = isSwapped
         pendingPrimaryPhotoData   = nil
         pendingSecondaryPhotoData = nil
@@ -542,7 +624,6 @@ class CaptureManager: NSObject, ObservableObject {
         photoCaptureFrameStyle    = pipFrameStyle
         photoCaptureFrameColor    = pipFrameColor
         photoCapturePipShape      = pipShape
-        photoCaptureShowWatermark = UserDefaults.standard.object(forKey: "showWatermark") as? Bool ?? true
         photoCaptureIsSwapped     = isSwapped
         pendingPrimaryPhotoData   = nil
         pendingSecondaryPhotoData = nil
@@ -577,10 +658,7 @@ class CaptureManager: NSObject, ObservableObject {
                                          layout: photoCaptureLayout,
                                          pipWidthFraction: photoCapturePipWidth / max(displayWidth, 1))
         var composite = cropToAspectRatio(rawComposite, ratio: photoCaptureAspectRatio.ratio)
-        
-        if photoCaptureShowWatermark {
-            composite = drawWatermarkOnPhoto(composite)
-        }
+
 
         let item = MediaItem(type: .photo, pair: photoCapturePair)
         item.primaryImage = composite
@@ -630,62 +708,6 @@ class CaptureManager: NSObject, ObservableObject {
         return renderer.image { _ in
             let drawOrigin = CGPoint(x: -cropRect.minX, y: -cropRect.minY)
             image.draw(at: drawOrigin)
-        }
-    }
-
-    private func drawWatermarkOnPhoto(_ image: UIImage) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: image.size)
-        return renderer.image { ctx in
-            image.draw(at: .zero)
-            
-            let scale = image.size.width
-            
-            // Safe bundle-aware asset loading for background-thread and custom contexts
-            var logo = UIImage(named: "noticedicon")
-            if logo == nil {
-                logo = UIImage(named: "noticedicon", in: Bundle.main, compatibleWith: nil)
-            }
-            
-            guard let logoImg = logo else { return }
-            
-            let logoSize = max(40.0, scale * 0.05) // 5% of the image width
-            let padding = logoSize * 0.2
-            let totalSize = logoSize + padding * 2
-            
-            let margin = scale * 0.03
-            let wmRect = CGRect(
-                x: image.size.width - totalSize - margin,
-                y: image.size.height - totalSize - margin,
-                width: totalSize,
-                height: totalSize
-            )
-            
-            // Premium background glass capsule
-            let path = UIBezierPath(roundedRect: wmRect, cornerRadius: totalSize * 0.28)
-            UIColor.black.withAlphaComponent(0.4).setFill()
-            path.fill()
-            
-            // Ultra-subtle liquid glass border
-            UIColor.white.withAlphaComponent(0.2).setStroke()
-            path.lineWidth = max(1.0, scale * 0.0012)
-            path.stroke()
-            
-            // Draw logo with smooth rounded clipping and neon ring
-            let logoRect = CGRect(
-                x: wmRect.minX + padding,
-                y: wmRect.minY + padding,
-                width: logoSize,
-                height: logoSize
-            )
-            ctx.cgContext.saveGState()
-            let logoPath = UIBezierPath(roundedRect: logoRect, cornerRadius: logoSize * 0.24)
-            logoPath.addClip()
-            logoImg.draw(in: logoRect)
-            ctx.cgContext.restoreGState()
-            
-            UIColor.white.withAlphaComponent(0.3).setStroke()
-            logoPath.lineWidth = max(1.0, scale * 0.0008)
-            logoPath.stroke()
         }
     }
 
@@ -909,18 +931,17 @@ class CaptureManager: NSObject, ObservableObject {
         let snapRatio  = videoCaptureAspectRatio
         let snapHFR    = videoCaptureHighFrameRate
         let qual       = videoQuality
-        let showWm     = UserDefaults.standard.object(forKey: "showWatermark") as? Bool ?? true
         let autoRaw    = autoSaveRawFeeds
+        
         Task {
             guard let urls = await _recorder.stopRecording() else { return }
             isRecording = false
             recordingSecondsElapsed = 0
-            isProcessingVideo = true
-            rawCapturedURLs = urls
-
-            if let merged = await VideoRecorder.mergeWithLayout(
-                primary: urls.primary,
-                secondary: urls.secondary,
+            
+            // Create processing task
+            let task = ProcessingTask(
+                primaryURL: urls.primary,
+                secondaryURL: urls.secondary,
                 isSwapped: swapped,
                 layout: layout,
                 aspectRatio: snapRatio,
@@ -930,53 +951,211 @@ class CaptureManager: NSObject, ObservableObject {
                 frameStyle: frmStyle,
                 frameColor: frmColor,
                 pipShape: frmShape,
-                showWatermark: showWm,
-                quality: qual
-            ) {
-                guard isProcessingVideo else { return }
-                isProcessingVideo = false
-                rawCapturedURLs = nil
-                let item = MediaItem(type: .video, pair: pair)
-                item.primaryVideoURL = merged
-                item.thumbnail = thumbnailFrom(url: merged)
-                capturedItems.insert(item, at: 0)
-                do {
-                    try await PHPhotoLibrary.shared().performChanges {
-                        PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: merged)
-                    }
-                    flashSavedBanner()
-                } catch {
-                    print("Failed to save video: \(error)")
-                }
-                // Auto-save raw feeds if enabled
-                if autoRaw {
-                    let pURL = urls.primary
-                    let sURL = urls.secondary
-                    let pItem = MediaItem(type: .video, pair: pair)
-                    pItem.primaryVideoURL = pURL
-                    pItem.thumbnail = thumbnailFrom(url: pURL)
-                    let sItem = MediaItem(type: .video, pair: pair)
-                    sItem.primaryVideoURL = sURL
-                    sItem.thumbnail = thumbnailFrom(url: sURL)
-                    capturedItems.insert(pItem, at: 0)
-                    capturedItems.insert(sItem, at: 0)
-                    do {
-                        try await PHPhotoLibrary.shared().performChanges {
-                            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: pURL)
-                            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: sURL)
-                        }
-                    } catch {
-                        print("Failed to auto-save raw feeds: \(error)")
-                    }
-                }
+                quality: qual,
+                pair: pair
+            )
+            
+            if isBackgroundProcessingEnabled {
+                // Add to queue for background processing
+                processingQueue.append(task)
+                processNextVideoInQueue()
             } else {
-                guard isProcessingVideo else { return }
-                isProcessingVideo = false
-                rawCapturedURLs = nil
-                errorMessage = "Video processing failed. The recording may be too short."
+                // Process immediately in foreground
+                processVideoTask(task, inBackground: false)
             }
-            isProcessingVideo = false
         }
+    }
+    
+    private func processVideoTask(_ task: ProcessingTask, inBackground: Bool) {
+        guard !isProcessingVideo else { return }
+        
+        isProcessingVideo = true
+        processingProgress = 0.0
+        processingStatusMessage = "Starting video processing..."
+        currentProcessingTask = task
+        
+        if inBackground {
+            startBackgroundTask()
+            // Start Live Activity for background processing
+            liveActivityManager.startVideoProcessingActivity(videosInQueue: processingQueue.count + 1)
+        }
+        
+        Task.detached(priority: .userInitiated) {
+            await MainActor.run { [weak self] in
+                self?.processingProgress = 0.1
+                self?.processingStatusMessage = "Preparing video merge..."
+                if inBackground {
+                    self?.liveActivityManager.updateProgress(0.1, statusMessage: "Preparing video merge...", videosInQueue: self?.processingQueue.count ?? 0)
+                }
+            }
+            
+            let merged = await VideoRecorder.mergeWithLayout(
+                primary: task.primaryURL,
+                secondary: task.secondaryURL,
+                isSwapped: task.isSwapped,
+                layout: task.layout,
+                aspectRatio: task.aspectRatio,
+                highFrameRate: task.highFrameRate,
+                pipWidthFraction: task.pipWidthFraction,
+                pipPosition: task.pipPosition,
+                frameStyle: task.frameStyle,
+                frameColor: task.frameColor,
+                pipShape: task.pipShape,
+                quality: task.quality,
+                progressCallback: { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self = self else { return }
+                        
+                        // Create more detailed status messages based on progress
+                        let statusMessages = [
+                            (0.0...0.2, "Compositing dual cameras"),
+                            (0.2...0.5, "Rendering video layers"),
+                            (0.5...0.8, "Encoding final video"),
+                            (0.8...1.0, "Finalizing export")
+                        ]
+                        
+                        var currentMessage = "Processing video"
+                        for (range, message) in statusMessages {
+                            if range.contains(progress) {
+                                currentMessage = message
+                                break
+                            }
+                        }
+                        
+                        self.processingProgress = 0.1 + (progress * 0.8) // 10-90%
+                        let progressPercent = Int(progress * 100)
+                        self.processingStatusMessage = "\(currentMessage)... \(progressPercent)%"
+                        
+                        if inBackground {
+                            self.liveActivityManager.updateProgress(
+                                0.1 + (progress * 0.8),
+                                statusMessage: "\(currentMessage)... \(progressPercent)%",
+                                videosInQueue: self.processingQueue.count
+                            )
+                        }
+                    }
+                }
+            )
+            
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                
+                if let merged = merged {
+                    self.processingProgress = 0.95
+                    self.processingStatusMessage = "Saving to photo library..."
+                    if inBackground {
+                        self.liveActivityManager.updateProgress(0.95, statusMessage: "Saving to photo library...", videosInQueue: self.processingQueue.count)
+                    }
+                    
+                    let item = MediaItem(type: .video, pair: task.pair)
+                    item.primaryVideoURL = merged
+                    item.thumbnail = self.thumbnailFrom(url: merged)
+                    self.capturedItems.insert(item, at: 0)
+                    
+                    Task {
+                        do {
+                            try await PHPhotoLibrary.shared().performChanges {
+                                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: merged)
+                            }
+                            await self.flashSavedBanner()
+                            
+                            await MainActor.run { [weak self] in
+                                self?.processingProgress = 1.0
+                                self?.processingStatusMessage = "Video saved successfully!"
+                                
+                                if inBackground {
+                                    self?.liveActivityManager.updateProgress(1.0, statusMessage: "Video saved successfully!", videosInQueue: self?.processingQueue.count ?? 0)
+                                    
+                                    // Complete Live Activity if queue is empty, otherwise continue
+                                    if self?.processingQueue.isEmpty == true {
+                                        self?.liveActivityManager.completeActivity()
+                                    }
+                                }
+                                
+                                // Auto-delay clear the success message
+                                Task { @MainActor in
+                                    try? await Task.sleep(for: .seconds(2))
+                                    self?.isProcessingVideo = false
+                                    self?.processingProgress = 0.0
+                                    self?.processingStatusMessage = ""
+                                    self?.currentProcessingTask = nil
+                                    
+                                    if inBackground {
+                                        self?.endBackgroundTask()
+                                    }
+                                    
+                                    // Process next item in queue
+                                    self?.processNextVideoInQueue()
+                                }
+                            }
+                        } catch {
+                            await MainActor.run { [weak self] in
+                                print("Failed to save video: \(error)")
+                                self?.errorMessage = "Failed to save video: \(error.localizedDescription)"
+                                self?.isProcessingVideo = false
+                                self?.processingProgress = 0.0
+                                self?.processingStatusMessage = ""
+                                self?.currentProcessingTask = nil
+                                
+                                if inBackground {
+                                    self?.liveActivityManager.cancelActivity()
+                                    self?.endBackgroundTask()
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    self.isProcessingVideo = false
+                    self.processingProgress = 0.0
+                    self.processingStatusMessage = ""
+                    self.currentProcessingTask = nil
+                    self.errorMessage = "Video processing failed. The recording may be too short."
+                    
+                    if inBackground {
+                        self.liveActivityManager.cancelActivity()
+                        self.endBackgroundTask()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func processNextVideoInQueue() {
+        guard !isProcessingVideo, !processingQueue.isEmpty else { return }
+        let nextTask = processingQueue.removeFirst()
+        processVideoTask(nextTask, inBackground: true)
+    }
+    
+    private func startBackgroundTask() {
+        endBackgroundTask() // End any existing task
+        
+        backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "VideoProcessing") { [weak self] in
+            // Called when the system is about to terminate the background task
+            self?.endBackgroundTask()
+        }
+    }
+    
+    private func endBackgroundTask() {
+        if backgroundTaskIdentifier != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskIdentifier)
+            backgroundTaskIdentifier = .invalid
+        }
+    }
+    
+    // MARK: - Queue Management
+    
+    func clearProcessingQueue() {
+        processingQueue.removeAll()
+        liveActivityManager.cancelActivity()
+    }
+    
+    func cancelCurrentProcessing() {
+        isProcessingVideo = false
+        processingProgress = 0.0
+        processingStatusMessage = ""
+        currentProcessingTask = nil
+        liveActivityManager.cancelActivity()
+        endBackgroundTask()
     }
 
     private func flashSavedBanner() {

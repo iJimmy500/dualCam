@@ -107,6 +107,7 @@ class VideoRecorder {
             writer.startSession(atSourceTime: ts)
             secondaryWriter?.startSession(atSourceTime: ts)
             sessionStarted = true
+            AppLogger.shared.log("Recording session started at time: \(ts.seconds)")
         }
         let ready = input.isReadyForMoreMediaData
         lock.unlock()
@@ -203,8 +204,8 @@ class VideoRecorder {
         frameStyle: PipFrameStyle = .none,
         frameColor: PipFrameColor = .white,
         pipShape: PipShape = .roundedRect,
-        showWatermark: Bool = true,
-        quality: VideoQuality = .medium
+        quality: VideoQuality = .medium,
+        progressCallback: ((Double) -> Void)? = nil
     ) async -> URL? {
         let primaryAsset   = AVURLAsset(url: primary)
         let secondaryAsset = AVURLAsset(url: secondary)
@@ -216,7 +217,24 @@ class VideoRecorder {
         let primaryDuration   = (try? await primaryAsset.load(.duration))   ?? .zero
         let secondaryDuration = (try? await secondaryAsset.load(.duration)) ?? .zero
         let duration = CMTimeMinimum(primaryDuration, secondaryDuration)
-        guard duration.seconds > 0 else { return nil }
+        
+        AppLogger.shared.log("DualCam Merge Debug:")
+        AppLogger.shared.log("  Primary duration: \(primaryDuration.seconds)s")
+        AppLogger.shared.log("  Secondary duration: \(secondaryDuration.seconds)s") 
+        AppLogger.shared.log("  Final duration: \(duration.seconds)s")
+        AppLogger.shared.log("  Is swapped: \(isSwapped)")
+        AppLogger.shared.log("  Layout: \(layout)")
+        AppLogger.shared.log("  Main track will be: \(isSwapped ? "secondary" : "primary")")
+        AppLogger.shared.log("  PiP track will be: \(isSwapped ? "primary" : "secondary")")
+        
+        // Check for frame availability at the start
+        let startTime = CMTime(value: 0, timescale: 600) // Use a higher timescale for precision
+        AppLogger.shared.log("  Checking frame availability at start time...")
+        
+        guard duration.seconds > 0 else { 
+            AppLogger.shared.log("Error - Invalid duration: videos too short")
+            return nil 
+        }
 
         let mainTrack = isSwapped ? secondaryVideoTrack : primaryVideoTrack
         let pipTrack  = isSwapped ? primaryVideoTrack   : secondaryVideoTrack
@@ -324,31 +342,59 @@ class VideoRecorder {
                                                           preferredTrackID: kCMPersistentTrackID_Invalid)
         else { return nil }
 
-        let timeRange = CMTimeRange(start: .zero, duration: duration)
-        try? mainComp.insertTimeRange(timeRange, of: mainTrack, at: .zero)
-        try? pipComp.insertTimeRange(timeRange,  of: pipTrack,  at: .zero)
+        // Check if this might be a synchronization issue with missing initial frames
+        let timingTolerance = CMTime(value: 1, timescale: 30) // 1/30 second tolerance
+        let baseTimeRange = CMTimeRange(start: .zero, duration: duration)
+        var adjustedTimeRange = baseTimeRange
+        
+        // If one video is significantly shorter at the start, we might have sync issues
+        let durationDiff = abs(primaryDuration.seconds - secondaryDuration.seconds)
+        if durationDiff > 0.1 { // More than 100ms difference
+            AppLogger.shared.log("  Duration difference detected: \(durationDiff)s - adjusting for sync")
+            // Use a small offset to account for potential timing differences
+            let offset = CMTime(value: 1, timescale: 600) // 1.67ms offset
+            adjustedTimeRange = CMTimeRange(start: offset, duration: CMTimeSubtract(duration, offset))
+        }
+        
+        let finalTimeRange = adjustedTimeRange
+        
+        do {
+            try mainComp.insertTimeRange(finalTimeRange, of: mainTrack, at: .zero)
+            AppLogger.shared.log("DualCam: Inserted main track (ID: \(mainComp.trackID))")
+        } catch {
+            AppLogger.shared.log("DualCam: Failed to insert main track: \(error)")
+            return nil
+        }
+        
+        do {
+            try pipComp.insertTimeRange(finalTimeRange, of: pipTrack, at: .zero)
+            AppLogger.shared.log("DualCam: Inserted pip track (ID: \(pipComp.trackID))")
+        } catch {
+            AppLogger.shared.log("DualCam: Failed to insert pip track: \(error)")
+            // Even if PiP track insertion fails, continue with main track only
+            AppLogger.shared.log("Warning: PiP track insertion failed, continuing with main track only")
+        }
 
         // Audio is always written into the primary file — load it from there regardless of swap.
         if let audioTrack = try? await primaryAsset.loadTracks(withMediaType: .audio).first,
            let audioComp  = composition.addMutableTrack(withMediaType: .audio,
                                                          preferredTrackID: kCMPersistentTrackID_Invalid) {
-            try? audioComp.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+            try? audioComp.insertTimeRange(finalTimeRange, of: audioTrack, at: .zero)
         }
 
         let instruction = DualCamVideoCompositionInstruction(
-            timeRange: timeRange,
-            mainTrackID: mainComp.trackID,
-            pipTrackID: pipComp.trackID,
-            layoutMode: layout,
-            renderSize: renderSize,
-            pipRect: videoPipRect,
+            timeRange:     finalTimeRange,
+            mainTrackID:   mainComp.trackID,
+            pipTrackID:    pipComp.trackID,
+            layoutMode:    layout,
+            renderSize:    renderSize,
+            pipRect:       videoPipRect,
             mainTransform: mainFinalTransform,
-            pipTransform: pipFinalTransform,
-            frameStyle: frameStyle,
-            frameColor: frameColor,
-            pipShape: pipShape,
-            showWatermark: showWatermark,
-            cornerRadius: renderSize.width * 0.028
+            pipTransform:  pipFinalTransform,
+            frameStyle:    frameStyle,
+            frameColor:    frameColor,
+            pipShape:      pipShape,
+            cornerRadius:  renderSize.width * 0.028
         )
 
         let videoComposition = AVMutableVideoComposition()
@@ -378,24 +424,115 @@ class VideoRecorder {
         exporter.outputFileType   = .mov
         exporter.videoComposition = videoComposition
 
-        await exporter.export()
+        // Progress reporting with better status messages
+        if let progressCallback = progressCallback {
+            progressCallback(0.0)
+            
+            // Create a task to monitor progress with more frequent updates
+            let progressTask = Task {
+                var lastProgress: Float = 0.0
+                while !Task.isCancelled && exporter.status == .exporting {
+                    let currentProgress = exporter.progress
+                    if currentProgress > lastProgress {
+                        await MainActor.run {
+                            progressCallback(Double(currentProgress))
+                        }
+                        lastProgress = currentProgress
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            
+            await exporter.export()
+            progressTask.cancel()
+            progressCallback(1.0)
+        } else {
+            await exporter.export()
+        }
 
         if exporter.status == .completed {
+            AppLogger.shared.log("DualCam export completed successfully")
             try? FileManager.default.removeItem(at: primary)
             try? FileManager.default.removeItem(at: secondary)
             return outputURL
         } else {
+            AppLogger.shared.log("Video export failed with status: \(exporter.status.rawValue), error: \(String(describing: exporter.error))")
             print("Video export failed with status: \(exporter.status.rawValue), error: \(String(describing: exporter.error))")
         }
         return nil
     }
 
 
+
+    // MARK: - Frame overlay helpers
+
+    private static func addFrameOverlay(
+        to parent: CALayer, pipRect: CGRect, cornerRadius: CGFloat,
+        style: PipFrameStyle, color: PipFrameColor, renderWidth: CGFloat
+    ) {
+        let lw  = max(3.0, renderWidth * 0.004)
+        let c   = color.uiColor
+        let path = UIBezierPath(roundedRect: pipRect, cornerRadius: cornerRadius).cgPath
+
+        switch style {
+        case .none: break
+
+        case .solid:
+            parent.addSublayer(sl(path, color: c, lw: lw))
+
+        case .thick:
+            parent.addSublayer(sl(path, color: c, lw: lw * 3.5))
+
+        case .double:
+            parent.addSublayer(sl(path, color: c.withAlphaComponent(0.9), lw: lw))
+            let innerPath = UIBezierPath(
+                roundedRect: pipRect.insetBy(dx: lw * 2, dy: lw * 2),
+                cornerRadius: max(0, cornerRadius - lw * 2)).cgPath
+            parent.addSublayer(sl(innerPath, color: c.withAlphaComponent(0.65), lw: lw * 0.75))
+
+        case .dashed:
+            let layer = sl(path, color: c, lw: lw * 1.5)
+            layer.lineDashPattern = [NSNumber(value: lw * 4), NSNumber(value: lw * 2)]
+            parent.addSublayer(layer)
+
+        case .glass:
+            parent.addSublayer(sl(path, color: c.withAlphaComponent(0.65), lw: lw))
+
+        case .glow:
+            let layer = sl(path, color: c, lw: lw * 1.5)
+            layer.shadowColor   = c.cgColor
+            layer.shadowOpacity = 0.85
+            layer.shadowRadius  = lw * 4
+            layer.shadowOffset  = .zero
+            parent.addSublayer(layer)
+
+        case .neon:
+            let outer = sl(path, color: c.withAlphaComponent(0.4), lw: lw * 5)
+            outer.shadowColor = c.cgColor; outer.shadowOpacity = 0.7
+            outer.shadowRadius = lw * 7;   outer.shadowOffset  = .zero
+            parent.addSublayer(outer)
+            let inner = sl(path, color: c, lw: lw)
+            inner.shadowColor = c.cgColor; inner.shadowOpacity = 1.0
+            inner.shadowRadius = lw * 2.5; inner.shadowOffset  = .zero
+            parent.addSublayer(inner)
+        }
+    }
+
+    private static func sl(_ path: CGPath, color: UIColor, lw: CGFloat) -> CAShapeLayer {
+        let s = CAShapeLayer()
+        s.path        = path
+        s.fillColor   = UIColor.clear.cgColor
+        s.strokeColor = color.cgColor
+        s.lineWidth   = lw
+        return s
+    }
+
 }
 
-// MARK: - Custom Video Compositing
 
-// Custom instruction that holds our layout parameters
+// MARK: - Custom CIImage compositor
+
+// Instruction carries all layout params into the per-frame compositor.
 class DualCamVideoCompositionInstruction: NSObject, AVVideoCompositionInstructionProtocol {
     var timeRange: CMTimeRange
     var enablePostProcessing: Bool = false
@@ -404,360 +541,271 @@ class DualCamVideoCompositionInstruction: NSObject, AVVideoCompositionInstructio
     var passthroughTrackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
 
     let mainTrackID: CMPersistentTrackID
-    let pipTrackID: CMPersistentTrackID
-    let layoutMode: LayoutMode
-    let renderSize: CGSize
-    let pipRect: CGRect?
+    let pipTrackID:  CMPersistentTrackID
+    let layoutMode:  LayoutMode
+    let renderSize:  CGSize
+    let pipRect:     CGRect?        // UIKit-space pip rect (used for crop + CIImage ops)
+    let ciPipRect:   CGRect?        // CIImage Y-up pip rect (used for mask/border drawing)
     let mainTransform: CGAffineTransform
-    let pipTransform: CGAffineTransform
-    
-    // PiP styling
-    let frameStyle: PipFrameStyle
-    let frameColor: PipFrameColor
-    let pipShape: PipShape
-    let showWatermark: Bool
+    let pipTransform:  CGAffineTransform
+    let frameStyle:  PipFrameStyle
+    let frameColor:  PipFrameColor
+    let pipShape:    PipShape
     let cornerRadius: CGFloat
 
-    init(
-        timeRange: CMTimeRange,
-        mainTrackID: CMPersistentTrackID,
-        pipTrackID: CMPersistentTrackID,
-        layoutMode: LayoutMode,
-        renderSize: CGSize,
-        pipRect: CGRect?,
-        mainTransform: CGAffineTransform,
-        pipTransform: CGAffineTransform,
-        frameStyle: PipFrameStyle,
-        frameColor: PipFrameColor,
-        pipShape: PipShape,
-        showWatermark: Bool,
-        cornerRadius: CGFloat
-    ) {
+    init(timeRange: CMTimeRange,
+         mainTrackID: CMPersistentTrackID, pipTrackID: CMPersistentTrackID,
+         layoutMode: LayoutMode, renderSize: CGSize,
+         pipRect: CGRect?, mainTransform: CGAffineTransform, pipTransform: CGAffineTransform,
+         frameStyle: PipFrameStyle, frameColor: PipFrameColor, pipShape: PipShape,
+         cornerRadius: CGFloat) {
         self.timeRange = timeRange
-        self.mainTrackID = mainTrackID
-        self.pipTrackID = pipTrackID
-        self.layoutMode = layoutMode
-        self.renderSize = renderSize
+        self.mainTrackID = mainTrackID; self.pipTrackID = pipTrackID
+        self.layoutMode = layoutMode;   self.renderSize = renderSize
         self.pipRect = pipRect
-        self.mainTransform = mainTransform
-        self.pipTransform = pipTransform
-        self.frameStyle = frameStyle
-        self.frameColor = frameColor
-        self.pipShape = pipShape
-        self.showWatermark = showWatermark
+        // Pre-compute CIImage Y-up equivalent of pipRect for mask/border rendering
+        if let pr = pipRect {
+            self.ciPipRect = CGRect(x: pr.minX, y: renderSize.height - pr.maxY,
+                                    width: pr.width, height: pr.height)
+        } else { self.ciPipRect = nil }
+        self.mainTransform = mainTransform; self.pipTransform = pipTransform
+        self.frameStyle = frameStyle; self.frameColor = frameColor; self.pipShape = pipShape
         self.cornerRadius = cornerRadius
-        
-        self.requiredSourceTrackIDs = [
-            NSNumber(value: mainTrackID),
-            NSNumber(value: pipTrackID)
-        ]
+        self.requiredSourceTrackIDs = [NSNumber(value: mainTrackID), NSNumber(value: pipTrackID)]
         super.init()
     }
 }
 
+
 class DualCamVideoCompositor: NSObject, AVVideoCompositing {
-    private let renderContextQueue = DispatchQueue(label: "com.dualcam.videocompositor")
+    private let renderContextQueue = DispatchQueue(label: "com.dualcam.compositor")
     private var renderContext: AVVideoCompositionRenderContext?
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    // Metal-backed context for GPU-accelerated compositing
+    private let ciContext: CIContext = {
+        if let device = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
+        }
+        return CIContext(options: [.cacheIntermediates: false])
+    }()
+
+    // Masks are identical on every frame — compute once, reuse for all frames
+    private var cachedMask: CIImage?
+    private var cachedBorder: CIImage?
+    private var masksReady = false
 
     var sourcePixelBufferAttributes: [String: Any]? {
-        return [
-            String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA,
-            String(kCVPixelBufferMetalCompatibilityKey): true
-        ]
+        [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA,
+         String(kCVPixelBufferMetalCompatibilityKey): true]
     }
-
     var requiredPixelBufferAttributesForRenderContext: [String: Any] {
-        return [
-            String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA,
-            String(kCVPixelBufferMetalCompatibilityKey): true
-        ]
+        [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA,
+         String(kCVPixelBufferMetalCompatibilityKey): true]
     }
 
-    func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
-        renderContextQueue.sync {
-            self.renderContext = newRenderContext
-        }
+    func renderContextChanged(_ ctx: AVVideoCompositionRenderContext) {
+        renderContextQueue.sync { renderContext = ctx }
     }
 
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
         autoreleasepool {
-            guard let instruction = request.videoCompositionInstruction as? DualCamVideoCompositionInstruction else {
-                request.finish(with: NSError(domain: "DualCamVideoCompositor", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid instruction type."]))
+            guard let instr = request.videoCompositionInstruction
+                    as? DualCamVideoCompositionInstruction else {
+                request.finish(with: NSError(domain: "DualCam", code: 0,
+                    userInfo: [NSLocalizedDescriptionKey: "Bad instruction type"]))
+                return
+            }
+            guard let outBuf = renderContext?.newPixelBuffer() else {
+                request.finish(with: NSError(domain: "DualCam", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "No output buffer"]))
                 return
             }
 
-            let mainPixelBuffer = request.sourceFrame(byTrackID: instruction.mainTrackID)
-            let pipPixelBuffer = request.sourceFrame(byTrackID: instruction.pipTrackID)
+            let renderRect = CGRect(origin: .zero, size: instr.renderSize)
+            let H = instr.renderSize.height
 
-            guard let outputPixelBuffer = renderContext?.newPixelBuffer() else {
-                request.finish(with: NSError(domain: "DualCamVideoCompositor", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create output pixel buffer."]))
-                return
+            // Flip: CVPixelBuffer is stored top-first; flip converts to CIImage Y-up.
+            // After flip + fillTransform (UIKit Y-down), content lands at pipRect in CIImage.
+            func ci(_ buf: CVPixelBuffer, _ t: CGAffineTransform) -> CIImage {
+                let flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1,
+                                             tx: 0, ty: CGFloat(CVPixelBufferGetHeight(buf)))
+                return CIImage(cvPixelBuffer: buf).transformed(by: flip).transformed(by: t)
             }
 
-            let renderRect = CGRect(origin: .zero, size: instruction.renderSize)
-            
-            let mainImage: CIImage
-            if let mb = mainPixelBuffer {
-                let h = CGFloat(CVPixelBufferGetHeight(mb))
-                let flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: h)
-                mainImage = CIImage(cvPixelBuffer: mb).transformed(by: flip).transformed(by: instruction.mainTransform)
-            } else {
-                mainImage = CIImage(color: .black).cropped(to: renderRect)
-            }
+            let mainBuf = request.sourceFrame(byTrackID: instr.mainTrackID)
+            let pipBuf  = request.sourceFrame(byTrackID: instr.pipTrackID)
 
-            let pipImage: CIImage
-            if let pb = pipPixelBuffer {
-                let h = CGFloat(CVPixelBufferGetHeight(pb))
-                let flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: h)
-                pipImage = CIImage(cvPixelBuffer: pb).transformed(by: flip).transformed(by: instruction.pipTransform)
-            } else {
-                pipImage = CIImage(color: .clear).cropped(to: renderRect)
-            }
+            let mainImage = mainBuf.map { ci($0, instr.mainTransform) }
+                         ?? CIImage(color: .black).cropped(to: renderRect)
+            let pipImage  = pipBuf.map  { ci($0, instr.pipTransform)  }
+                         ?? CIImage(color: .black).cropped(to: renderRect)
 
             var finalImage: CIImage
 
-            if instruction.layoutMode == .pip, let pipRect = instruction.pipRect {
-                // 1. Draw main image
-                let background = mainImage.cropped(to: renderRect)
+            if instr.layoutMode == .pip,
+               let pipRect   = instr.pipRect,
+               let ciPipRect = instr.ciPipRect {
 
-                // 2. Convert pipRect from UIKit Y-down space into CIImage Y-up space,
-                //    then crop the pip image to that converted rect.
-                let ciPipRect = CGRect(
-                    x: pipRect.minX,
-                    y: instruction.renderSize.height - pipRect.maxY,
-                    width: pipRect.width,
-                    height: pipRect.height
-                )
-                let croppedPip = pipImage.cropped(to: ciPipRect)
-                
-                // Create custom shape mask — uses CIImage Y-up rect so the mask
-                // sits in the same coordinate space as the composited images.
-                guard let maskImage = createShapeMask(shape: instruction.pipShape, rect: ciPipRect, renderRect: renderRect, cornerRadius: instruction.cornerRadius) else {
-                    request.finish(with: NSError(domain: "DualCamVideoCompositor", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create shape mask."]))
+                // Build masks once per export, not once per frame
+                if !masksReady {
+                    masksReady = true
+                    cachedMask   = makeMask(shape: instr.pipShape, rect: ciPipRect,
+                                            size: instr.renderSize, cr: instr.cornerRadius)
+                    cachedBorder = instr.frameStyle != .none
+                        ? makeBorder(shape: instr.pipShape, rect: ciPipRect,
+                                     size: instr.renderSize, style: instr.frameStyle,
+                                     color: instr.frameColor, cr: instr.cornerRadius)
+                        : nil
+                }
+
+                guard let maskImage = cachedMask else {
+                    request.finish(with: NSError(domain: "DualCam", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Mask failed"]))
                     return
                 }
-                
-                // Apply the mask to the PiP image
-                let blendFilter = CIFilter(name: "CIBlendWithMask")!
-                blendFilter.setValue(croppedPip, forKey: kCIInputImageKey)
-                blendFilter.setValue(CIImage(color: .clear).cropped(to: CGRect(origin: .zero, size: instruction.renderSize)), forKey: kCIInputBackgroundImageKey)
-                blendFilter.setValue(maskImage, forKey: kCIInputMaskImageKey)
-                let roundedPip = blendFilter.outputImage!
 
-                // 3. Create Drop Shadow of matching shape
-                let shadowFilter = CIFilter(name: "CIGaussianBlur")!
-                let shadowMask = CIFilter(name: "CIColorMatrix")!
-                shadowMask.setValue(maskImage, forKey: kCIInputImageKey)
-                shadowMask.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                shadowMask.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputGVector")
-                shadowMask.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBVector")
-                shadowMask.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.45), forKey: "inputAVector")
-                
-                shadowFilter.setValue(shadowMask.outputImage, forKey: kCIInputImageKey)
-                shadowFilter.setValue(instruction.renderSize.width * 0.018, forKey: kCIInputRadiusKey)
-                let shadow = shadowFilter.outputImage!
-                    .transformed(by: CGAffineTransform(translationX: 0, y: -instruction.renderSize.width * 0.006)) // UIKit/CoreImage Y-axis difference
+                let background = mainImage.cropped(to: renderRect)
 
-                // 4. Create Frame Border of matching shape (also in CIImage Y-up space)
-                var frameImage = CIImage(color: .clear).cropped(to: renderRect)
-                if instruction.frameStyle != .none {
-                    if let border = createShapeBorder(shape: instruction.pipShape, rect: ciPipRect, renderSize: instruction.renderSize, frameStyle: instruction.frameStyle, frameColor: instruction.frameColor, cornerRadius: instruction.cornerRadius) {
-                        frameImage = border
-                    }
+                // Crop pip from where it actually lives in CIImage (pipRect, NOT ciPipRect)
+                let croppedPip = pipImage.cropped(to: pipRect)
+
+                // Mask to custom shape
+                let blend = CIFilter(name: "CIBlendWithMask")!
+                blend.setValue(croppedPip, forKey: kCIInputImageKey)
+                blend.setValue(CIImage(color: .clear).cropped(to: renderRect),
+                               forKey: kCIInputBackgroundImageKey)
+                blend.setValue(maskImage, forKey: kCIInputMaskImageKey)
+                let shapedPip = blend.outputImage!
+
+                // Drop shadow
+                let shadowAlpha = CIFilter(name: "CIColorMatrix")!
+                shadowAlpha.setValue(maskImage, forKey: kCIInputImageKey)
+                shadowAlpha.setValue(CIVector(x:0,y:0,z:0,w:0), forKey:"inputRVector")
+                shadowAlpha.setValue(CIVector(x:0,y:0,z:0,w:0), forKey:"inputGVector")
+                shadowAlpha.setValue(CIVector(x:0,y:0,z:0,w:0), forKey:"inputBVector")
+                shadowAlpha.setValue(CIVector(x:0,y:0,z:0,w:0.45), forKey:"inputAVector")
+                let blurFilter = CIFilter(name: "CIGaussianBlur")!
+                blurFilter.setValue(shadowAlpha.outputImage, forKey: kCIInputImageKey)
+                blurFilter.setValue(instr.renderSize.width * 0.018, forKey: kCIInputRadiusKey)
+                let shadow = blurFilter.outputImage!
+                    .transformed(by: CGAffineTransform(translationX: 0,
+                                                       y: -(instr.renderSize.width * 0.006)))
+
+                // Frame border (pre-rendered, nil if none)
+                let frameBorder = cachedBorder
+                    ?? CIImage(color: .clear).cropped(to: renderRect)
+
+                // Composite: shadow → pip → border
+                let comp1 = CIFilter(name: "CISourceOverCompositing")!
+                comp1.setValue(shapedPip, forKey: kCIInputImageKey)
+                comp1.setValue(shadow,    forKey: kCIInputBackgroundImageKey)
+                let comp2 = CIFilter(name: "CISourceOverCompositing")!
+                comp2.setValue(frameBorder,       forKey: kCIInputImageKey)
+                comp2.setValue(comp1.outputImage, forKey: kCIInputBackgroundImageKey)
+                var pipGroup = comp2.outputImage!
+
+                // Pop-in fade (0 → 1 over first 0.5 s, pivot at pip centre in CIImage space)
+                let t = request.compositionTime.seconds
+                if t < 0.5 {
+                    let ease = CGFloat(1.0 - pow(1.0 - t / 0.5, 4))
+                    let cx = pipRect.midX, cy = pipRect.midY
+                    pipGroup = pipGroup.transformed(by:
+                        CGAffineTransform(translationX: cx, y: cy)
+                            .scaledBy(x: ease, y: ease)
+                            .translatedBy(x: -cx, y: -cy))
+                    let fade = CIFilter(name: "CIColorMatrix")!
+                    fade.setValue(pipGroup, forKey: kCIInputImageKey)
+                    fade.setValue(CIVector(x:0,y:0,z:0,w:ease), forKey:"inputAVector")
+                    pipGroup = fade.outputImage!
                 }
 
-                // 5. Composite them all together: Shadow -> PiP -> Border
-                let compShadowPip = CIFilter(name: "CISourceOverCompositing")!
-                compShadowPip.setValue(roundedPip, forKey: kCIInputImageKey)
-                compShadowPip.setValue(shadow, forKey: kCIInputBackgroundImageKey)
-                
-                let compFullPip = CIFilter(name: "CISourceOverCompositing")!
-                compFullPip.setValue(frameImage, forKey: kCIInputImageKey)
-                compFullPip.setValue(compShadowPip.outputImage, forKey: kCIInputBackgroundImageKey)
-                
-                var finalPipGroup = compFullPip.outputImage!
-                
-                // Animate pop-in for the first 0.6 seconds to hide delayed/missing starting frames
-                let time = request.compositionTime.seconds
-                let animDuration = 0.6
-                if time < animDuration {
-                    let progress = time / animDuration
-                    let easeOut = 1.0 - pow(1.0 - progress, 4) // Quartic ease out
-                    
-                    // Use CIImage-space pip center for the scale pivot
-                    let scaleTransform = CGAffineTransform(translationX: ciPipRect.midX, y: ciPipRect.midY)
-                        .scaledBy(x: CGFloat(easeOut), y: CGFloat(easeOut))
-                        .translatedBy(x: -ciPipRect.midX, y: -ciPipRect.midY)
-                    
-                    finalPipGroup = finalPipGroup.transformed(by: scaleTransform)
-                    
-                    let alphaFilter = CIFilter(name: "CIColorMatrix")!
-                    alphaFilter.setValue(finalPipGroup, forKey: kCIInputImageKey)
-                    alphaFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(easeOut)), forKey: "inputAVector")
-                    finalPipGroup = alphaFilter.outputImage!
-                }
-                
-                let compFinal = CIFilter(name: "CISourceOverCompositing")!
-                compFinal.setValue(finalPipGroup, forKey: kCIInputImageKey)
-                compFinal.setValue(background, forKey: kCIInputBackgroundImageKey)
-                
-                finalImage = compFinal.outputImage!.cropped(to: renderRect)
+                let final = CIFilter(name: "CISourceOverCompositing")!
+                final.setValue(pipGroup,   forKey: kCIInputImageKey)
+                final.setValue(background, forKey: kCIInputBackgroundImageKey)
+                finalImage = final.outputImage!.cropped(to: renderRect)
 
             } else {
-                // Split or Spotlight
-                // In these modes, the layouts are just sharp rectangles, so we just composite them directly
-                // mainImage is already transformed to fill its half
-                // pipImage is transformed to fill its half
-                // pip layer sits on top
+                // Split / Spotlight: each track fills its slot
                 let comp = CIFilter(name: "CISourceOverCompositing")!
-                comp.setValue(pipImage.cropped(to: renderRect), forKey: kCIInputImageKey)
+                comp.setValue(pipImage.cropped(to: renderRect),  forKey: kCIInputImageKey)
                 comp.setValue(mainImage.cropped(to: renderRect), forKey: kCIInputBackgroundImageKey)
                 finalImage = comp.outputImage!.cropped(to: renderRect)
             }
-            
-            // Watermark disabled
 
-            let flipOutput = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: instruction.renderSize.height)
-            let finalToRender = finalImage.transformed(by: flipOutput)
-
-            self.ciContext.render(finalToRender, to: outputPixelBuffer, bounds: renderRect, colorSpace: CGColorSpaceCreateDeviceRGB())
-            request.finish(withComposedVideoFrame: outputPixelBuffer)
+            // Flip back to pixel-buffer storage order (Y-down / top-first)
+            let flipOut = CGAffineTransform(a:1, b:0, c:0, d:-1, tx:0, ty:H)
+            ciContext.render(finalImage.transformed(by: flipOut),
+                             to: outBuf, bounds: renderRect,
+                             colorSpace: CGColorSpaceCreateDeviceRGB())
+            request.finish(withComposedVideoFrame: outBuf)
         }
     }
 
-    private func createShapeMask(shape: PipShape, rect: CGRect, renderRect: CGRect, cornerRadius: CGFloat) -> CIImage? {
-        let size = renderRect.size
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let uiImage = renderer.image { context in
-            let ctx = context.cgContext
-            ctx.setFillColor(UIColor.clear.cgColor)
-            ctx.fill(renderRect)
-            
-            ctx.setFillColor(UIColor.white.cgColor)
-            let path = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cornerRadius)
-            path.fill()
+    // MARK: - Mask / border helpers
+    // scale = 1.0 is critical: renderSize is in VIDEO PIXELS not screen points.
+    // Using screen scale (2× or 3×) creates a CGImage 2–3× too large, placing the
+    // white shape at wrong CIImage coordinates and making the pip invisible.
+
+    private func makeMask(shape: PipShape, rect: CGRect,
+                          size: CGSize, cr: CGFloat) -> CIImage? {
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1.0
+        let img = UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
+            UIColor.white.setFill()
+            UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr).fill()
         }
-        guard let cg = uiImage.cgImage else { return nil }
-        return CIImage(cgImage: cg)
+        return img.cgImage.map { CIImage(cgImage: $0) }
     }
 
-    private func createShapeBorder(shape: PipShape, rect: CGRect, renderSize: CGSize, frameStyle: PipFrameStyle, frameColor: PipFrameColor, cornerRadius: CGFloat) -> CIImage? {
-        let size = renderSize
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let uiImage = renderer.image { context in
-            let ctx = context.cgContext
-            ctx.setFillColor(UIColor.clear.cgColor)
-            ctx.fill(CGRect(origin: .zero, size: size))
-            
-            let lw = max(3.0, renderSize.width * 0.004)
-            let c = frameColor.uiColor
-            ctx.setStrokeColor(c.cgColor)
-            
-            let insetRect = rect.insetBy(dx: lw / 2, dy: lw / 2)
-            
-            switch frameStyle {
-            case .none:
-                break
+    private func makeBorder(shape: PipShape, rect: CGRect, size: CGSize,
+                             style: PipFrameStyle, color: PipFrameColor,
+                             cr: CGFloat) -> CIImage? {
+        let lw  = max(3.0, size.width * 0.004)
+        let c   = color.uiColor
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1.0
+        let img = UIGraphicsImageRenderer(size: size, format: fmt).image { ctx in
+            ctx.cgContext.clear(CGRect(origin: .zero, size: size))
+            switch style {
+            case .none: break
             case .solid:
-                ctx.setLineWidth(lw)
-                let path = UIBezierPath.pathForShape(shape, in: insetRect, cornerRadius: max(0, cornerRadius - lw/2))
-                path.stroke()
+                let p = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr)
+                p.lineWidth = lw; c.setStroke(); p.stroke()
             case .thick:
-                let thickLw = lw * 3.5
-                ctx.setLineWidth(thickLw)
-                let path = UIBezierPath.pathForShape(shape, in: rect.insetBy(dx: thickLw/2, dy: thickLw/2), cornerRadius: max(0, cornerRadius - thickLw/2))
-                path.stroke()
+                let p = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr)
+                p.lineWidth = lw * 3.5; c.setStroke(); p.stroke()
             case .double:
-                ctx.setLineWidth(lw)
-                let pathOuter = UIBezierPath.pathForShape(shape, in: insetRect, cornerRadius: max(0, cornerRadius - lw/2))
-                c.withAlphaComponent(0.9).setStroke()
-                pathOuter.stroke()
-                
-                let innerInset = lw * 2
-                ctx.setLineWidth(lw * 0.75)
-                let pathInner = UIBezierPath.pathForShape(shape, in: rect.insetBy(dx: innerInset, dy: innerInset), cornerRadius: max(0, cornerRadius - innerInset))
-                c.withAlphaComponent(0.65).setStroke()
-                pathInner.stroke()
+                let o = UIBezierPath.pathForShape(shape, in: rect.insetBy(dx: -lw, dy: -lw),
+                                                  cornerRadius: cr + lw)
+                o.lineWidth = lw; c.withAlphaComponent(0.9).setStroke(); o.stroke()
+                let i = UIBezierPath.pathForShape(shape, in: rect.insetBy(dx: lw*2, dy: lw*2),
+                                                  cornerRadius: max(0, cr - lw*2))
+                i.lineWidth = lw * 0.75; c.withAlphaComponent(0.65).setStroke(); i.stroke()
             case .dashed:
-                ctx.setLineWidth(lw * 1.5)
-                let path = UIBezierPath.pathForShape(shape, in: insetRect, cornerRadius: max(0, cornerRadius - lw * 0.75))
-                path.setLineDash([lw * 5, lw * 2.5], count: 2, phase: 0)
-                path.stroke()
+                let p = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr)
+                p.lineWidth = lw * 1.5
+                p.setLineDash([lw*5, lw*2.5], count: 2, phase: 0)
+                c.setStroke(); p.stroke()
             case .glass:
-                ctx.setLineWidth(lw)
-                let path = UIBezierPath.pathForShape(shape, in: insetRect, cornerRadius: max(0, cornerRadius - lw/2))
-                c.withAlphaComponent(0.65).setStroke()
-                path.stroke()
-            case .glow, .neon:
-                ctx.saveGState()
-                ctx.setShadow(offset: .zero, blur: renderSize.width * 0.012, color: c.withAlphaComponent(0.7).cgColor)
-                ctx.setLineWidth(lw * 1.5)
-                let path = UIBezierPath.pathForShape(shape, in: insetRect, cornerRadius: max(0, cornerRadius - lw * 0.75))
-                path.stroke()
-                ctx.restoreGState()
+                let p = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr)
+                p.lineWidth = lw; c.withAlphaComponent(0.72).setStroke(); p.stroke()
+            case .glow:
+                ctx.cgContext.saveGState()
+                ctx.cgContext.setShadow(offset: .zero, blur: size.width * 0.012,
+                                        color: c.withAlphaComponent(0.7).cgColor)
+                let p = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr)
+                p.lineWidth = lw * 1.5; c.setStroke(); p.stroke()
+                ctx.cgContext.restoreGState()
+            case .neon:
+                ctx.cgContext.saveGState()
+                ctx.cgContext.setShadow(offset: .zero, blur: size.width * 0.024,
+                                        color: c.withAlphaComponent(0.9).cgColor)
+                let p = UIBezierPath.pathForShape(shape, in: rect, cornerRadius: cr)
+                p.lineWidth = lw * 1.2; c.setStroke(); p.stroke()
+                ctx.cgContext.setShadow(offset: .zero, blur: size.width * 0.008,
+                                        color: UIColor.white.cgColor)
+                p.stroke()
+                ctx.cgContext.restoreGState()
             }
         }
-        guard let cg = uiImage.cgImage else { return nil }
-        return CIImage(cgImage: cg)
-    }
-
-    private func createWatermarkImage(renderSize: CGSize) -> CIImage? {
-        let scale = renderSize.width
-        
-        // Safe bundle-aware asset loading for background-thread and custom contexts
-        var logo = UIImage(named: "noticedicon")
-        if logo == nil {
-            logo = UIImage(named: "noticedicon", in: Bundle.main, compatibleWith: nil)
-        }
-        
-        guard let logoImg = logo else { return nil }
-        
-        let logoSize = max(32.0, scale * 0.05) // 5% of the video canvas width
-        let padding = logoSize * 0.2
-        let totalSize = logoSize + padding * 2
-        let size = CGSize(width: totalSize, height: totalSize)
-        
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let uiImage = renderer.image { context in
-            let r = CGRect(origin: .zero, size: size)
-            let ctx = context.cgContext
-            
-            // Premium background glass capsule
-            let path = UIBezierPath(roundedRect: r, cornerRadius: totalSize * 0.28)
-            UIColor.black.withAlphaComponent(0.4).setFill()
-            path.fill()
-            
-            // Ultra-subtle liquid glass border
-            UIColor.white.withAlphaComponent(0.2).setStroke()
-            path.lineWidth = max(1.0, scale * 0.0012)
-            path.stroke()
-            
-            // Draw logo with smooth rounded clipping and neon ring
-            let logoRect = CGRect(
-                x: padding,
-                y: padding,
-                width: logoSize,
-                height: logoSize
-            )
-            ctx.saveGState()
-            let logoPath = UIBezierPath(roundedRect: logoRect, cornerRadius: logoSize * 0.24)
-            logoPath.addClip()
-            logoImg.draw(in: logoRect)
-            ctx.restoreGState()
-            
-            UIColor.white.withAlphaComponent(0.3).setStroke()
-            logoPath.lineWidth = max(1.0, scale * 0.0008)
-            logoPath.stroke()
-        }
-        
-        guard let cgImage = uiImage.cgImage else { return nil }
-        let watermarkCI = CIImage(cgImage: cgImage)
-        
-        let margin = scale * 0.03
-        let posX = renderSize.width - size.width - margin
-        let posY = margin
-        
-        return watermarkCI.transformed(by: CGAffineTransform(translationX: posX, y: posY))
+        return img.cgImage.map { CIImage(cgImage: $0) }
     }
 }

@@ -9,6 +9,7 @@ struct SettingsView: View {
     private let isPro = AppSettings.hasTelephoto
 
     @State private var showingHighQualityWarning = false
+    @State private var showingLogs = false
 
     var body: some View {
         NavigationStack {
@@ -19,6 +20,7 @@ struct SettingsView: View {
                 generalSection
                 experimentalSection
                 proSection
+                developerSection
                 aboutSection
             }
             .scrollContentBackground(.hidden)
@@ -35,6 +37,9 @@ struct SettingsView: View {
                 Button("Got it", role: .cancel) { }
             } message: {
                 Text("High Quality exports require significantly more processing power and time. They may fail on older devices or with long recordings.")
+            }
+            .sheet(isPresented: $showingLogs) {
+                LogsView()
             }
         }
     }
@@ -412,6 +417,22 @@ struct SettingsView: View {
             .background(.orange.opacity(0.15), in: Capsule())
     }
 
+    private var developerSection: some View {
+        Section("Developer Settings") {
+            Button {
+                showingLogs = true
+            } label: {
+                HStack {
+                    Label("View System Logs", systemImage: "doc.text.magnifyingglass")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     // MARK: - About & Credits
     
     private var aboutSection: some View {
@@ -521,6 +542,63 @@ struct LiquidGlassBackground: View {
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
             .ignoresSafeArea()
+        }
+    }
+}
+
+struct LogsView: View {
+    @ObservedObject var logger = AppLogger.shared
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            VStack {
+                if logger.logs.isEmpty {
+                    Text("No logs available")
+                        .foregroundColor(.secondary)
+                        .padding()
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(logger.logs, id: \.self) { log in
+                                Text(log)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.85))
+                                    .textSelection(.enabled)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                }
+            }
+            .background(Color.black.ignoresSafeArea())
+            .navigationTitle("System Logs")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Clear") {
+                        logger.clear()
+                    }
+                    .foregroundColor(.red)
+                }
+                
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack {
+                        Button {
+                            UIPasteboard.general.string = logger.exportString()
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        
+                        Button("Close") {
+                            dismiss()
+                        }
+                        .fontWeight(.semibold)
+                    }
+                }
+            }
+            .preferredColorScheme(.dark)
         }
     }
 }
