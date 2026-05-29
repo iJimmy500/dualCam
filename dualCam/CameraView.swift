@@ -795,22 +795,36 @@ struct CameraView: View {
 
     private var loadingOverlay: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            LinearGradient(
+                colors: [Color(white: 0.10), Color(white: 0.02)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
             
-            VStack(spacing: 20) {
+            VStack(spacing: 24) {
                 Spacer()
                 
-                VStack(spacing: 16) {
-                    Image(systemName: "camera.aperture")
-                        .font(.system(size: 48, weight: .ultraLight))
-                        .foregroundStyle(.white.opacity(0.85))
+                VStack(spacing: 20) {
+                    Image("noticedicon")
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 96, height: 96)
+                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .stroke(.white.opacity(0.18), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                    
                     Text("dualCam")
-                        .font(.system(size: 24, weight: .semibold))
+                        .font(.system(size: 26, weight: .bold))
                         .foregroundStyle(.white)
-                        .tracking(1.0)
+                        .tracking(1.2)
+                    
                     Text(capture.isProcessingVideo ? "Processing video…" : "Starting cameras…")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
                         .padding(.top, 2)
                 }
                 
