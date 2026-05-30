@@ -206,7 +206,7 @@ enum CameraPair: String, CaseIterable, Identifiable {
 }
 
 @MainActor
-class MediaItem: Identifiable, ObservableObject {
+class MediaItem: Identifiable, ObservableObject, Equatable {
     let id = UUID()
     let type: MediaType
     let createdAt = Date()
@@ -225,5 +225,11 @@ class MediaItem: Identifiable, ObservableObject {
     init(type: MediaType, pair: CameraPair) {
         self.type = type
         self.cameraPair = pair
+    }
+    
+    // MARK: - Equatable
+    
+    static func == (lhs: MediaItem, rhs: MediaItem) -> Bool {
+        return lhs.id == rhs.id
     }
 }

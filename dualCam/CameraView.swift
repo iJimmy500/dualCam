@@ -1,9 +1,19 @@
 import SwiftUI
 import AVFoundation
+import MediaPlayer
 
 struct CameraView: View {
     @EnvironmentObject var capture: CaptureManager
     @EnvironmentObject var settings: AppSettings
+    @StateObject private var storageManager = StorageManager()
+    @StateObject private var systemMonitor = SystemMonitor.shared
+    @StateObject private var backgroundManager = BackgroundManager.shared
+
+    // @AppStorage directly on the view guarantees an instant re-render when the
+    // key changes — no objectWillChange indirection, no sheet-behind-view delays.
+    @AppStorage("layoutMode") private var layoutModeRaw: String = LayoutMode.pip.rawValue
+    private var activeLayout: LayoutMode { LayoutMode(rawValue: layoutModeRaw) ?? .pip }
+
     @State private var captureMode: CaptureMode = .photo
     @State private var showPairPicker = false
     @State private var showSettings = false
@@ -14,10 +24,17 @@ struct CameraView: View {
     @State private var lastZoomFactor: CGFloat = 1.0
     @State private var pipWidth: CGFloat = 108
     @State private var pipScaleGesture: CGFloat = 1.0
-    @State private var videoModeReady = true
     @State private var previewItem: MediaItem? = nil
     @State private var countdown: Int? = nil
     @State private var countdownTask: Task<Void, Never>? = nil
+    @State private var showWelcome = false
+    @State private var showStorageWarning = false
+    @State private var storageWarningMessage = ""
+
+    // Persistent haptic generators — prepared once, reused every call.
+    // Creating a new generator per-tap without prepare() causes noticeable delay.
+    private let hapticMedium = UIImpactFeedbackGenerator(style: .medium)
+    private let hapticLight  = UIImpactFeedbackGenerator(style: .light)
 
     enum CaptureMode: String, CaseIterable { case photo = "PHOTO", video = "VIDEO" }
 
@@ -38,14 +55,56 @@ struct CameraView: View {
             }
         }
         .task { await capture.checkPermissionsAndSetup() }
+        .onAppear {
+            capture.startVolumeObservation()
+            if !settings.hasSeenWelcome { showWelcome = true }
+            // Initialize storage monitoring once
+            storageManager.updateStorageInfo()
+        }
+        .onDisappear { capture.stopVolumeObservation() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            backgroundManager.applicationDidEnterBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            backgroundManager.applicationWillEnterForeground()
+        }
+        // Hidden MPVolumeView suppresses the system volume HUD when volume button shutter fires
+        .overlay(alignment: .topLeading) { HiddenVolumeView().frame(width: 1, height: 1) }
+        .onReceive(NotificationCenter.default.publisher(for: .dualCamVolumeShutter)) { _ in
+            guard settings.volumeShutter, captureMode == .photo else { return }
+            handleShutter()
+        }
         .alert("Camera Error", isPresented: .constant(capture.errorMessage != nil)) {
             Button("OK") { capture.errorMessage = nil }
         } message: {
             Text(capture.errorMessage ?? "")
         }
+        .alert("Storage Warning", isPresented: $showStorageWarning) {
+            Button("Record Anyway", role: .destructive) {
+                proceedWithVideoRecording()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(storageWarningMessage)
+        }
+        .alert("Thermal Warning", isPresented: .constant(capture.thermalWarningMessage != nil)) {
+            Button("OK") { capture.thermalWarningMessage = nil }
+        } message: {
+            Text(capture.thermalWarningMessage ?? "")
+        }
+        .alert("Power Optimization", isPresented: .constant(capture.powerOptimizationMessage != nil)) {
+            Button("OK") { capture.powerOptimizationMessage = nil }
+            Button("Settings", action: { showSettings = true })
+        } message: {
+            Text(capture.powerOptimizationMessage ?? "")
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(capture)
+                .environmentObject(settings)
+        }
+        .sheet(isPresented: $showWelcome) {
+            WelcomeView()
                 .environmentObject(settings)
         }
         .preferredColorScheme(.dark)
@@ -63,33 +122,20 @@ struct CameraView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                switch settings.layoutMode {
-                case .pip:
-                    mainPreview
-                        .ignoresSafeArea()
-                case .splitH:
-                    splitHView(geo: geo)
-                case .splitV:
-                    splitVView(geo: geo)
-                case .spotH:
-                    spotlightView(geo: geo)
+                // PiP: full-screen camera with floating chrome overlay.
+                // Split/Spotlight: cameras sandwiched between an opaque top and bottom bar
+                // so neither chrome element overlaps a camera panel.
+                if activeLayout == .pip {
+                    pipLayoutContent(geo: geo)
+                } else {
+                    splitLayoutContent(geo: geo)
                 }
 
-                // Flash burst
+                // Overlays that apply to every layout
                 if capture.flashFired {
                     Color.white.opacity(0.9).ignoresSafeArea()
                         .transition(.opacity)
                         .animation(.easeInOut(duration: 0.07), value: capture.flashFired)
-                }
-
-                if settings.layoutMode == .pip {
-                    aspectRatioBars(in: geo)
-                        .transition(.opacity)
-                        .animation(.easeInOut(duration: 0.2), value: settings.aspectRatioRaw)
-                }
-
-                if settings.showGridOverlay && settings.layoutMode == .pip {
-                    gridOverlay.transition(.opacity)
                 }
 
                 if settings.showDebugInfo { debugOverlay }
@@ -100,12 +146,6 @@ struct CameraView: View {
                         .zIndex(10)
                 }
 
-                if settings.layoutMode == .pip && !capture.isConfiguring {
-                    pipView(in: geo)
-                        .transition(.scale(scale: 0.88).combined(with: .opacity))
-                        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: capture.isConfiguring)
-                }
-
                 if let pt = capture.focusPoint {
                     FocusIndicator()
                         .position(pt)
@@ -114,11 +154,9 @@ struct CameraView: View {
                 }
 
                 if countdown != nil {
-                    countdownOverlay
-                        .transition(.opacity)
+                    countdownOverlay.transition(.opacity)
                 }
 
-                // Dismiss quick settings on background tap
                 if showQuickSettings {
                     Color.clear.ignoresSafeArea()
                         .contentShape(Rectangle())
@@ -130,7 +168,6 @@ struct CameraView: View {
                         .zIndex(4)
                 }
 
-                // Quick settings panel — floats above shutter row, right-aligned
                 if showQuickSettings {
                     QuickSettingsPanel()
                         .environmentObject(capture)
@@ -141,10 +178,9 @@ struct CameraView: View {
                         .transition(.scale(scale: 0.88, anchor: .bottomTrailing).combined(with: .opacity))
                         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: showQuickSettings)
                         .zIndex(5)
-                        .onTapGesture {} // absorb taps inside panel
+                        .onTapGesture {}
                 }
 
-                // Saved to Photos banner
                 if capture.showSavedBanner {
                     savedBanner
                         .padding(.top, geo.safeAreaInsets.top + 56)
@@ -154,23 +190,74 @@ struct CameraView: View {
                         .zIndex(6)
                         .allowsHitTesting(false)
                 }
-
-                // Chrome
-                VStack(spacing: 0) {
-                    topBar
-                    Spacer()
-                    bottomBar(geo: geo)
-                }
-                .padding(.top, geo.safeAreaInsets.top)
             }
         }
+    }
+
+    // Full-screen camera with chrome floating on top — the PiP layout's natural mode.
+    private func pipLayoutContent(geo: GeometryProxy) -> some View {
+        ZStack {
+            mainPreview.ignoresSafeArea()
+
+            aspectRatioBars(in: geo)
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.2), value: settings.aspectRatioRaw)
+
+            if settings.showGridOverlay {
+                gridOverlay.transition(.opacity)
+            }
+
+            if !capture.isConfiguring {
+                pipView(in: geo)
+                    .transition(.scale(scale: 0.88).combined(with: .opacity))
+                    .animation(.spring(response: 0.45, dampingFraction: 0.75), value: capture.isConfiguring)
+            }
+
+            VStack(spacing: 0) {
+                topBar
+                Spacer()
+                bottomBar(geo: geo)
+            }
+            .padding(.top, geo.safeAreaInsets.top)
+        }
+    }
+
+    // Cameras sandwiched between opaque top/bottom bars — used for all split/spotlight layouts.
+    // The cameras occupy exactly the space between the bars so nothing is hidden behind chrome.
+    @ViewBuilder
+    private func splitLayoutContent(geo: GeometryProxy) -> some View {
+        VStack(spacing: 0) {
+            // Top chrome with solid black background over the notch/Dynamic Island area
+            topBar
+                .padding(.top, geo.safeAreaInsets.top)
+                .frame(maxWidth: .infinity)
+                .background(Color.black)
+
+            // Camera panels fill the remaining space between the two chrome bars
+            Group {
+                switch activeLayout {
+                case .splitH: splitHView()
+                case .splitV: splitVView()
+                case .spotH:  spotlightView()
+                default:      EmptyView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Bottom chrome with solid background so it clearly separates from cameras
+            bottomBar(geo: geo)
+                .frame(maxWidth: .infinity)
+                .background(Color.black.opacity(0.92).ignoresSafeArea(edges: .bottom))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
     }
 
     // Full-screen main preview with tap/zoom gestures
     private var mainPreview: some View {
         PreviewPlaceholder(layer: mainLayer)
             .onTapGesture(count: 2) {
-                if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                haptic()
                 if settings.zoomResetOnSwap {
                     capture.setZoom(1.0); lastZoomFactor = 1.0
                 }
@@ -196,53 +283,57 @@ struct CameraView: View {
     }
 
     // MARK: - Split layout views
+    // These live inside splitLayoutContent's VStack — no ignoresSafeArea needed,
+    // and no geo parameter since the parent VStack owns sizing.
 
-    private func splitHView(geo: GeometryProxy) -> some View {
+    private func splitHView() -> some View {
         VStack(spacing: 2) {
             PreviewPlaceholder(layer: mainLayer)
-                .frame(height: (geo.size.height - 2) / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
                 .onTapGesture(count: 2) {
-                    if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                    haptic()
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
                 }
             PreviewPlaceholder(layer: pipLayer)
-                .frame(height: (geo.size.height - 2) / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
         }
-        .ignoresSafeArea()
     }
 
-    private func splitVView(geo: GeometryProxy) -> some View {
+    private func splitVView() -> some View {
         HStack(spacing: 2) {
             PreviewPlaceholder(layer: mainLayer)
-                .frame(width: (geo.size.width - 2) / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
                 .onTapGesture(count: 2) {
-                    if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                    haptic()
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
                 }
             PreviewPlaceholder(layer: pipLayer)
-                .frame(width: (geo.size.width - 2) / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
         }
-        .ignoresSafeArea()
     }
 
-    private func spotlightView(geo: GeometryProxy) -> some View {
-        VStack(spacing: 2) {
-            PreviewPlaceholder(layer: mainLayer)
-                .frame(height: geo.size.height * 0.65)
-                .clipped()
-                .onTapGesture(count: 2) {
-                    if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
-                }
-            PreviewPlaceholder(layer: pipLayer)
-                .frame(height: geo.size.height * 0.35 - 2)
-                .clipped()
+    // Uses an internal GeometryReader so the 65/35 proportion is relative to the
+    // AVAILABLE height (between chrome bars), not the full screen height.
+    private func spotlightView() -> some View {
+        GeometryReader { inner in
+            VStack(spacing: 2) {
+                PreviewPlaceholder(layer: mainLayer)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: inner.size.height * 0.65)
+                    .clipped()
+                    .onTapGesture(count: 2) {
+                        haptic()
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
+                    }
+                PreviewPlaceholder(layer: pipLayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            }
         }
-        .ignoresSafeArea()
     }
 
     // MARK: - Top bar
@@ -298,14 +389,15 @@ struct CameraView: View {
 
     private func bottomBar(geo: GeometryProxy) -> some View {
         VStack(spacing: 0) {
-            if capture.supportsZoom {
+            // Zoom only makes sense in PiP where there's one dominant full-screen camera
+            if capture.supportsZoom && activeLayout == .pip {
                 zoomControl
                     .padding(.bottom, 20)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             modeSelector
-                .padding(.bottom, 24)
+                .padding(.bottom, 16)
 
             shutterRow
                 .padding(.bottom, geo.safeAreaInsets.bottom + 20)
@@ -327,15 +419,13 @@ struct CameraView: View {
                         capture.setZoom(1.0)
                         lastZoomFactor = 1.0
                         zoomGestureMagnification = 1.0
-                        videoModeReady = false
                         capture.prepareForRecording(highFrameRate: settings.highFrameRate)
-                        Task {
-                            // Writer startWriting() runs concurrently — 350 ms is enough headroom.
-                            try? await Task.sleep(for: .milliseconds(350))
-                            withAnimation(.easeOut(duration: 0.2)) { videoModeReady = true }
-                        }
+                        // Update storage info when switching to video mode
+                        storageManager.updateStorageInfo()
                     } else {
-                        videoModeReady = true
+                        // Switching away from video — cancel any in-flight preparation
+                        // so writers don't leak.
+                        capture.cancelVideoRecorderPrep()
                     }
                 } label: {
                     VStack(spacing: 4) {
@@ -373,9 +463,6 @@ struct CameraView: View {
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: capture.isRecording)
 
                 shutterButton
-                    .disabled(captureMode == .video && !videoModeReady)
-                    .opacity(captureMode == .video && !videoModeReady ? 0.45 : 1)
-                    .animation(.easeOut(duration: 0.2), value: videoModeReady)
 
                 Group {
                     if captureMode == .photo {
@@ -389,7 +476,7 @@ struct CameraView: View {
                 .animation(.spring(response: 0.3, dampingFraction: 0.75), value: captureMode)
             }
 
-            if captureMode == .video && !videoModeReady {
+            if captureMode == .video && !capture.isVideoRecorderReady {
                 HStack(spacing: 6) {
                     ProgressView()
                         .progressViewStyle(.circular)
@@ -401,8 +488,9 @@ struct CameraView: View {
                 }
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: videoModeReady)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: capture.isVideoRecorderReady)
     }
 
     // MARK: - Settings button
@@ -439,16 +527,30 @@ struct CameraView: View {
 
     private var debugOverlay: some View {
         VStack(alignment: .leading, spacing: 3) {
+            Text("── Camera ──").foregroundStyle(.green.opacity(0.5))
             Text("Pair: \(capture.currentPair.rawValue)")
-            Text("Zoom: \(String(format: "%.2f×", capture.zoom))")
+            Text("Zoom: \(String(format: "%.2f×", capture.zoom)) preset=\(capture.activePresetID ?? "—")")
             Text("Flash: \(capture.flashMode.displayName)")
             Text("Swapped: \(capture.isSwapped ? "Yes" : "No")")
-            Text("Recording limit: \(CaptureManager.maxRecordingSeconds)s")
+            Text("Layout: \(settings.layoutModeRaw)")
+            Text("── Capture ──").foregroundStyle(.green.opacity(0.5))
+            Text("Mode: \(captureMode.rawValue)")
+            Text("Timer: \(settings.captureTimer == 0 ? "Off" : "\(settings.captureTimer)s")")
+            Text("Delayed dual: \(settings.delayedDualCapture ? "On" : "Off")")
+            Text("Live: \(settings.liveMode && capture.isLivePhotoAvailable ? "On" : "Off")")
+            Text("Countdown: \(countdown.map { "\($0)" } ?? "—")")
+            Text("── Video ──").foregroundStyle(.green.opacity(0.5))
+            Text("Recording: \(capture.isRecording ? "Yes \(capture.recordingSecondsElapsed)s" : "No")")
+            Text("Rec limit: \(CaptureManager.maxRecordingSeconds)s")
+            Text("HFR: \(settings.highFrameRate ? "60fps" : "30fps")")
+            Text("Codec: \(settings.recordingCodecRaw)")
+            Text("Quality: \(settings.videoQualityRaw)")
+            Text("Recorder ready: \(capture.isVideoRecorderReady ? "Yes" : "No")")
         }
         .font(.system(size: 10, weight: .medium).monospacedDigit())
         .foregroundStyle(.green)
         .padding(8)
-        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .padding(.top, 64)
         .padding(.leading, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -545,9 +647,9 @@ struct CameraView: View {
 
     private func pipView(in geo: GeometryProxy) -> some View {
         let pipW     = pipWidth * pipScaleGesture
-        // Use 9:16 portrait ratio — matches how iPhones display camera previews in portrait mode.
-        // resizeAspectFill handles any slight mismatch by cropping rather than squashing.
-        let pipH     = pipW * (16.0 / 9.0)
+        // Circle needs a square frame so the clip is a true circle (not an ellipse);
+        // all other shapes use 9:16 portrait ratio matching the camera sensor delivery.
+        let pipH     = settings.pipShape == .circle ? pipW : pipW * (16.0 / 9.0)
         let baseX    = capture.pipPosition.x * geo.size.width
         let baseY    = capture.pipPosition.y * geo.size.height
         let dragging = pipDragging != .zero
@@ -597,7 +699,7 @@ struct CameraView: View {
                             pipWidth = newW
                             pipScaleGesture = 1.0
                         }
-                        let newH = newW * (16.0 / 9.0)   // matches pipH = pipW * (16/9) above
+                        let newH = settings.pipShape == .circle ? newW : newW * (16.0 / 9.0)
                         let snapped = snapToCorner(CGPoint(x: baseX, y: baseY),
                                                    in: geo.frame(in: .local),
                                                    pipW: newW, pipH: newH)
@@ -655,79 +757,177 @@ struct CameraView: View {
     // MARK: - Shutter button
 
     private var shutterButton: some View {
-        Button { handleShutter() } label: {
-            ZStack {
-                Circle()
-                    .stroke(.white.opacity(0.9), lineWidth: 2.5)
-                    .frame(width: 76, height: 76)
-                // Live mode badge
-                if captureMode == .photo && settings.liveMode && capture.isLivePhotoAvailable {
-                    Text("LIVE")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(.yellow.opacity(0.9), in: Capsule())
-                        .offset(y: -44)
-                }
+        ZStack {
+            Circle()
+                .stroke(.white.opacity(0.9), lineWidth: 2.5)
+                .frame(width: 76, height: 76)
 
-                if captureMode == .photo {
-                    // Photo: white fill
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 64, height: 64)
-                        .scaleEffect(shutterPressed ? 0.75 : 1)
-                        .animation(.easeOut(duration: 0.09), value: shutterPressed)
-                } else {
-                    // Video: red roundrect morphs to stop square
-                    RoundedRectangle(cornerRadius: capture.isRecording ? 7 : 32, style: .continuous)
-                        .fill(.red)
-                        .frame(
-                            width:  capture.isRecording ? 30 : 58,
-                            height: capture.isRecording ? 30 : 58
-                        )
-                        .animation(.spring(response: 0.32, dampingFraction: 0.68), value: capture.isRecording)
-                }
+            // Live mode badge
+            if captureMode == .photo && settings.liveMode && capture.isLivePhotoAvailable {
+                Text("LIVE")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.yellow.opacity(0.9), in: Capsule())
+                    .offset(y: -44)
+            }
+
+            if captureMode == .photo {
+                // Photo: white fill
+                Circle()
+                    .fill(.white)
+                    .frame(width: 64, height: 64)
+                    .scaleEffect(shutterPressed ? 0.75 : 1)
+                    .animation(.easeOut(duration: 0.09), value: shutterPressed)
+            } else {
+                // Video: red roundrect morphs to stop square
+                RoundedRectangle(cornerRadius: capture.isRecording ? 7 : 32, style: .continuous)
+                    .fill(.red)
+                    .frame(
+                        width:  capture.isRecording ? 30 : 58,
+                        height: capture.isRecording ? 30 : 58
+                    )
+                    .animation(.spring(response: 0.32, dampingFraction: 0.68), value: capture.isRecording)
             }
         }
-        .buttonStyle(ShutterButtonStyle())
+        .contentShape(Circle())
+        // Double-tap: instant capture when delay is on, or short-delay when delay is off
+        .onTapGesture(count: 2) {
+            guard captureMode == .photo else { return }
+            handleDoubleTapShutter()
+        }
+        // Single-tap: normal shutter behavior
+        .onTapGesture {
+            guard !(captureMode == .video && !capture.isVideoRecorderReady) else { return }
+            handleShutter()
+        }
+        .opacity(captureMode == .video && !capture.isVideoRecorderReady ? 0.45 : 1)
+        .animation(.easeOut(duration: 0.2), value: capture.isVideoRecorderReady)
+        .scaleEffect(shutterPressed ? 0.94 : 1)
+        .animation(.spring(response: 0.18, dampingFraction: 0.6), value: shutterPressed)
     }
 
     private func handleShutter() {
-        if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+        haptic()
         showQuickSettings = false
 
         switch captureMode {
         case .photo:
             // Tap during countdown → cancel
             if countdown != nil {
+                AppLogger.shared.log("Shutter: countdown cancelled by tap")
                 countdownTask?.cancel()
                 withAnimation { countdown = nil }
                 return
             }
 
             if settings.delayedDualCapture {
-                // Fire primary now, count down, then fire secondary
+                let secs = max(settings.captureTimer, 3)
+                AppLogger.shared.log("Shutter: delayed dual — primary now, secondary in \(secs)s")
                 flashShutterAnimation()
                 capture.captureDelayedPrimary()
-                let secs = max(settings.captureTimer, 3)
                 startCountdown(secs) { self.capture.captureDelayedSecondary() }
 
             } else if settings.captureTimer > 0 {
+                AppLogger.shared.log("Shutter: timer \(settings.captureTimer)s countdown started")
                 startCountdown(settings.captureTimer) { self.executePhotoCapture() }
 
             } else {
+                AppLogger.shared.log("Shutter: instant photo capture")
                 executePhotoCapture()
             }
 
         case .video:
-            if capture.isRecording { capture.stopRecording() } else { capture.startRecording(highFrameRate: settings.highFrameRate) }
+            if capture.isRecording {
+                AppLogger.shared.log("Shutter: stop recording at \(capture.recordingSecondsElapsed)s")
+                capture.stopRecording()
+            } else {
+                AppLogger.shared.log("Shutter: start recording (HFR=\(settings.highFrameRate), limit=\(CaptureManager.maxRecordingSeconds)s)")
+                checkStorageAndStartRecording()
+            }
+        }
+    }
+
+    private func handleDoubleTapShutter() {
+        haptic()
+        showQuickSettings = false
+
+        let delayActive = settings.captureTimer > 0 || settings.delayedDualCapture
+
+        if countdown != nil {
+            AppLogger.shared.log("Double-tap: cancelled countdown, firing instantly")
+            countdownTask?.cancel()
+            withAnimation { countdown = nil }
+            executePhotoCapture()
+        } else if delayActive {
+            AppLogger.shared.log("Double-tap: delay active (\(settings.captureTimer)s / delayedDual=\(settings.delayedDualCapture)) — firing instantly")
+            flashShutterAnimation()
+            capture.capturePhoto()
+        } else {
+            AppLogger.shared.log("Double-tap: no delay — starting quick 3s countdown")
+            startCountdown(3) { self.executePhotoCapture() }
         }
     }
 
     private func executePhotoCapture() {
+        AppLogger.shared.log("Photo capture triggered")
         flashShutterAnimation()
         capture.capturePhoto()
+    }
+
+    private func checkStorageAndStartRecording() {
+        guard settings.showStorageWarnings else {
+            proceedWithVideoRecording()
+            return
+        }
+        
+        // Only update storage info if it's been more than 5 minutes since last update
+        let shouldUpdate = Date().timeIntervalSince(storageManager.lastUpdated) > 300
+        if shouldUpdate {
+            storageManager.updateStorageInfo()
+        }
+        
+        let maxDuration = TimeInterval(settings.recordingLimitSeconds)
+        let storageCheck = storageManager.canRecordVideo(
+            duration: maxDuration,
+            quality: settings.videoQuality,
+            codec: settings.recordingCodec
+        )
+        
+        if let warningMessage = storageManager.getStorageWarningMessage(for: storageCheck.estimatedSize) {
+            storageWarningMessage = warningMessage
+            showStorageWarning = true
+            AppLogger.shared.log("Storage check: Warning shown - \(warningMessage)")
+        } else {
+            proceedWithVideoRecording()
+        }
+    }
+    
+    private func proceedWithVideoRecording() {
+        // Apply system-optimized settings if performance is reduced
+        let optimized = capture.getOptimizedSettings()
+        
+        if capture.isPerformanceReduced {
+            AppLogger.shared.log("Recording: Using optimized settings due to system constraints - codec: \(optimized.codec.rawValue), quality: \(optimized.quality.rawValue)")
+            
+            // Temporarily override settings for this recording
+            let originalCodec = settings.recordingCodec
+            let originalQuality = settings.videoQuality
+            
+            settings.recordingCodec = optimized.codec
+            settings.videoQuality = optimized.quality
+            
+            capture.startRecording(highFrameRate: false) // Disable high frame rate when performance reduced
+            
+            // Restore original settings after a delay (or when recording stops)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                settings.recordingCodec = originalCodec
+                settings.videoQuality = originalQuality
+            }
+        } else {
+            capture.startRecording(highFrameRate: settings.highFrameRate)
+        }
     }
 
     private func flashShutterAnimation() {
@@ -739,39 +939,88 @@ struct CameraView: View {
     }
 
     private func startCountdown(_ seconds: Int, completion: @escaping () -> Void) {
+        AppLogger.shared.log("Countdown started: \(seconds)s")
         countdown = seconds
         countdownTask = Task { @MainActor in
             for remaining in stride(from: seconds - 1, through: 1, by: -1) {
                 try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { countdown = nil; return }
-                if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                guard !Task.isCancelled else {
+                    AppLogger.shared.log("Countdown cancelled at \(remaining)s")
+                    countdown = nil; return
+                }
+                haptic(.light)
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { countdown = remaining }
             }
             try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { countdown = nil; return }
+            guard !Task.isCancelled else {
+                AppLogger.shared.log("Countdown cancelled at 0s")
+                countdown = nil; return
+            }
+            AppLogger.shared.log("Countdown complete — firing capture")
             withAnimation { countdown = nil }
             completion()
         }
     }
 
-    // MARK: - Zoom
+    // MARK: - Zoom controls (presets + fine slider)
 
     private var zoomControl: some View {
-        HStack(spacing: 10) {
-            // Zoom level badge
-            Text(String(format: capture.zoom < 10 ? "%.1f×" : "%.0f×", capture.zoom))
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .foregroundStyle(.yellow)
-                .frame(width: 34, alignment: .trailing)
-                .contentTransition(.numericText())
-                .animation(.spring(response: 0.2), value: capture.zoom)
+        VStack(spacing: 10) {
+            // Preset buttons — Apple-style capsule chips
+            zoomPresetBar
 
-            Slider(
-                value: Binding(get: { capture.zoom }, set: { capture.setZoom($0) }),
-                in: 1...capture.maxZoomFactor
-            )
-            .tint(.white)
+            // Fine-grained slider with live zoom badge
+            HStack(spacing: 10) {
+                Text(String(format: capture.zoom < 10 ? "%.1f×" : "%.0f×", capture.zoom))
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.yellow)
+                    .frame(width: 34, alignment: .trailing)
+                    .contentTransition(.numericText())
+                    .animation(.spring(response: 0.2), value: capture.zoom)
+
+                Slider(
+                    value: Binding(get: { capture.zoom }, set: { v in
+                        capture.setZoom(v)
+                        lastZoomFactor = v
+                    }),
+                    in: 1...capture.maxZoomFactor
+                )
+                .tint(.white)
+            }
         }
+    }
+
+    private var zoomPresetBar: some View {
+        HStack(spacing: 6) {
+            ForEach(capture.zoomPresets) { preset in
+                let active = capture.activePresetID == preset.id
+                Button {
+                    haptic(.light)
+                    capture.applyZoomPreset(preset)
+                    lastZoomFactor = preset.zoom
+                    zoomGestureMagnification = 1.0
+                } label: {
+                    Text(preset.label)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(active ? .black : .yellow)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule()
+                                .fill(active ? Color.yellow : Color.black.opacity(0.45))
+                                .overlay(
+                                    Capsule()
+                                        .stroke(Color.yellow.opacity(0.4), lineWidth: 0.5)
+                                        .opacity(active ? 0 : 1)
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+                .scaleEffect(active ? 1.08 : 1)
+                .animation(.spring(response: 0.28, dampingFraction: 0.65), value: active)
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: capture.activePresetID)
     }
 
     // MARK: - Saved banner
@@ -825,7 +1074,7 @@ struct CameraView: View {
                     if capture.isProcessingVideo {
                         ProcessingProgressView(
                             progress: capture.processingProgress,
-                            statusMessage: capture.processingStatusMessage.isEmpty ? "Processing video…" : capture.processingStatusMessage,
+                            statusMessage: "",
                             isConfiguring: false
                         )
                         .padding(.top, 12)
@@ -847,7 +1096,7 @@ struct CameraView: View {
                 if capture.isProcessingVideo {
                     VStack(spacing: 12) {
                         Button {
-                            if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                            haptic()
                             capture.saveBothVideosSeparately()
                         } label: {
                             HStack(spacing: 10) {
@@ -865,7 +1114,7 @@ struct CameraView: View {
                         .padding(.horizontal, 40)
                         
                         Button {
-                            if settings.hapticFeedback { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                            haptic()
                             capture.cancelProcessing()
                         } label: {
                             Text("Cancel")
@@ -886,6 +1135,14 @@ struct CameraView: View {
     }
 
     // MARK: - Helpers
+
+    // Centralised haptic helper. Uses persistent generators (prepared once)
+    // so the haptic engine is warm and fires immediately on first use.
+    private func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
+        guard settings.hapticFeedback else { return }
+        let gen = style == .light ? hapticLight : hapticMedium
+        gen.impactOccurred()
+    }
 
     private func timeString(_ seconds: Int) -> String {
         let s = max(0, seconds)
@@ -919,42 +1176,45 @@ struct CameraView: View {
 
 private struct CaptureSettingsSyncModifier: ViewModifier {
     let capture: CaptureManager
-    let settings: AppSettings
+    // @ObservedObject ensures the modifier body re-evaluates when settings change,
+    // which is required for onChange(of:) handlers to fire. A plain `let` constant
+    // (reference type) doesn't establish a SwiftUI dependency, so handlers silently
+    // skip — that was the root cause of stale layout / codec / liveMode composites.
+    @ObservedObject var settings: AppSettings
     let pipWidth: CGFloat
     @Binding var previewItem: MediaItem?
 
     func body(content: Content) -> some View {
         content
             .onAppear { syncAll() }
-            // Watch raw @AppStorage keys — computed wrappers are not tracked by onChange.
-            .onChange(of: settings.layoutModeRaw)    { _, _ in capture.layoutMode      = settings.layoutMode }
-            .onChange(of: settings.aspectRatioRaw)   { _, _ in capture.aspectRatio     = settings.aspectRatio }
-            .onChange(of: settings.pipFrameStyleRaw) { _, _ in capture.pipFrameStyle   = settings.pipFrameStyle }
-            .onChange(of: settings.pipFrameColorRaw) { _, _ in capture.pipFrameColor   = settings.pipFrameColor }
-            .onChange(of: settings.pipShapeRaw)      { _, _ in capture.pipShape        = settings.pipShape }
-            .onChange(of: settings.liveMode)         { _, v  in capture.isLiveModeActive = v }
-            .onChange(of: settings.videoQualityRaw)  { _, _ in capture.videoQuality    = settings.videoQuality }
-            .onChange(of: settings.autoSaveRawFeeds) { _, v  in capture.autoSaveRawFeeds = v }
-            .onChange(of: settings.screenAlwaysOn)   { _, v  in UIApplication.shared.isIdleTimerDisabled = v }
-            .onChange(of: pipWidth)                  { _, w  in capture.pipWidth = w }
+            // Settings backed by UserDefaults computed properties (layoutMode, aspectRatio,
+            // pipShape, etc.) are always read fresh at capture time, so no onChange needed.
+            // Only settings that drive live CaptureManager state still need syncing:
+            .onChange(of: settings.liveMode)          { _, v in capture.isLiveModeActive = v }
+            .onChange(of: settings.recordingCodecRaw) { _, _ in capture.recordingCodec = settings.recordingCodec }
+            .onChange(of: settings.mirrorFrontCamera) { _, _  in capture.applyFrontCameraMirror() }
+            .onChange(of: settings.screenAlwaysOn)    { _, v  in UIApplication.shared.isIdleTimerDisabled = v }
+            .onChange(of: pipWidth)                   { _, w  in capture.pipWidth = w }
             .onChange(of: capture.capturedItems.count) { old, new in
                 guard settings.showCapturePreview, new > old,
-                      let item = capture.capturedItems.first else { return }
+                      let item = capture.capturedItems.first,
+                      item.type == .photo else { return }
                 previewItem = item
+            }
+            .onChange(of: capture.recentVideoItem) { _, item in
+                guard settings.showCapturePreview, let item else { return }
+                previewItem = item
+                capture.recentVideoItem = nil
             }
     }
 
     private func syncAll() {
-        capture.layoutMode       = settings.layoutMode
+        // layoutMode, aspectRatio, pipShape, pipFrameStyle, pipFrameColor, videoQuality,
+        // autoSaveRawFeeds are now UserDefaults-computed — no sync needed.
         capture.pipWidth         = pipWidth
-        capture.aspectRatio      = settings.aspectRatio
-        capture.pipFrameStyle    = settings.pipFrameStyle
-        capture.pipFrameColor    = settings.pipFrameColor
-        capture.pipShape         = settings.pipShape
-        capture.showWatermark    = settings.showWatermark
         capture.isLiveModeActive = settings.liveMode
-        capture.videoQuality     = settings.videoQuality
-        capture.autoSaveRawFeeds = settings.autoSaveRawFeeds
+        capture.recordingCodec   = settings.recordingCodec
+        capture.applyFrontCameraMirror()
         UIApplication.shared.isIdleTimerDisabled = settings.screenAlwaysOn
     }
 }
@@ -987,6 +1247,18 @@ struct FocusIndicator: View {
     }
 }
 
+// MARK: - Hidden volume view (suppresses system volume HUD when volume-button shutter fires)
+
+private struct HiddenVolumeView: UIViewRepresentable {
+    func makeUIView(context: Context) -> MPVolumeView {
+        let v = MPVolumeView(frame: .zero)
+        v.alpha = 0.001   // effectively hidden but the system recognizes it as the volume control
+        v.isUserInteractionEnabled = false
+        return v
+    }
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {}
+}
+
 // MARK: - Preview bridge
 
 struct PreviewPlaceholder: UIViewRepresentable {
@@ -1013,10 +1285,3 @@ class _PreviewUIView: UIView {
     }
 }
 
-struct ShutterButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.spring(response: 0.18, dampingFraction: 0.6), value: configuration.isPressed)
-    }
-}

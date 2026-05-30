@@ -1,0 +1,104 @@
+name: Build & Release IPA
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g. 1.0.1)'
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+            echo "TAG=${GITHUB_REF_NAME}"        >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "TAG=v${{ github.event.inputs.version }}"    >> $GITHUB_OUTPUT
+          fi
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build archive (unsigned)
+        run: |
+          xcodebuild archive \
+            -project dualCam.xcodeproj \
+            -scheme dualCam \
+            -configuration Release \
+            -archivePath build/dualCam.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r "build/dualCam.xcarchive/Products/Applications/dualCam.app" Payload/
+          zip -r dualCam.ipa Payload/
+          echo "IPA_SIZE=$(wc -c < dualCam.ipa | tr -d ' ')" >> $GITHUB_ENV
+
+      - name: Update AltStore source
+        run: |
+          python3 - <<'EOF'
+          import json, os, datetime
+          with open('altstore-source.json') as f:
+              source = json.load(f)
+          app = source['apps'][0]
+          app['version'] = os.environ['VERSION']
+          app['versionDate'] = datetime.date.today().isoformat()
+          app['downloadURL'] = (
+              'https://github.com/${{ github.repository }}'
+              '/releases/download/' + os.environ['TAG'] + '/dualCam.ipa'
+          )
+          app['size'] = int(os.environ['IPA_SIZE'])
+          with open('altstore-source.json', 'w') as f:
+              json.dump(source, f, indent=2)
+          EOF
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          TAG: ${{ steps.ver.outputs.TAG }}
+
+      - name: Commit updated AltStore source
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add altstore-source.json
+          git commit -m "chore: bump AltStore source to ${{ steps.ver.outputs.VERSION }}"
+          git push origin HEAD:main
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.TAG }}" dualCam.ipa \
+            --title "dualCam ${{ steps.ver.outputs.VERSION }}" \
+            --notes "$(cat <<'NOTES'
+          ## Install via AltStore
+
+          1. Open AltStore on your iPhone
+          2. Go to **Browse** → tap **+** (top-left) → paste this source URL:
+             \`https://raw.githubusercontent.com/iJimmy500/dualCam/main/altstore-source.json\`
+          3. Find dualCam in the source and tap **Free**
+
+          ## Manual sideload
+
+          Download \`dualCam.ipa\` below and install with [Sideloadly](https://sideloadly.io) or AltStore.
+
+          > Requires iOS 18.0+ · iPhone XS or newer
+          NOTES
+          )"

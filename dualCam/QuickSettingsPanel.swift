@@ -5,6 +5,12 @@ struct QuickSettingsPanel: View {
     @EnvironmentObject var capture: CaptureManager
     @EnvironmentObject var settings: AppSettings
 
+    private let haptic: UIImpactFeedbackGenerator = {
+        let g = UIImpactFeedbackGenerator(style: .light)
+        g.prepare()
+        return g
+    }()
+
     var body: some View {
         VStack(spacing: 0) {
             quickRow(icon: "aspectratio", title: "Ratio") {
@@ -30,6 +36,7 @@ struct QuickSettingsPanel: View {
             quickRow(icon: "timer", title: "Timer") {
                 chip("Off", selected: settings.captureTimer == 0)  { settings.captureTimer = 0 }
                 chip("3s",  selected: settings.captureTimer == 3)  { settings.captureTimer = 3 }
+                chip("5s",  selected: settings.captureTimer == 5)  { settings.captureTimer = 5 }
                 chip("10s", selected: settings.captureTimer == 10) { settings.captureTimer = 10 }
             }
         }
@@ -72,7 +79,7 @@ struct QuickSettingsPanel: View {
 
     private func chip(_ label: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            haptic.impactOccurred()
             action()
         } label: {
             Text(label)

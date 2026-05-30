@@ -12,6 +12,7 @@ class VideoRecorder {
     private var audioInput: AVAssetWriterInput?
     private var sessionStarted = false
     private var isPrepared = false
+    private var preparationId: UUID?
 
     private var primaryURL: URL?
     private var secondaryURL: URL?
@@ -19,16 +20,32 @@ class VideoRecorder {
     private let lock = NSLock()
     private(set) var isRecording = false
 
-    private static func videoSettings(highFrameRate: Bool) -> [String: Any] {
+    private static func videoSettings(highFrameRate: Bool, codec: RecordingCodec) -> [String: Any] {
+        let (avCodec, bitrate): (AVVideoCodecType, Int) = {
+            switch codec {
+            case .h264:
+                return (.h264, 4_000_000)
+            case .hevcSafe:
+                // HEVC hardware encoder, same bitrate → ~40% smaller files, same perceptual quality
+                return (.hevc, 4_000_000)
+            case .hevcSave:
+                // HEVC at lower bitrate → ~60% smaller files, modest battery savings,
+                // slight quality risk on fast motion
+                return (.hevc, 2_500_000)
+            }
+        }()
+        var props: [String: Any] = [
+            AVVideoAverageBitRateKey:          bitrate,
+            AVVideoExpectedSourceFrameRateKey: highFrameRate ? 60 : 30
+        ]
+        if avCodec == .h264 {
+            props[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+        }
         return [
-            AVVideoCodecKey:  AVVideoCodecType.h264,
+            AVVideoCodecKey:  avCodec,
             AVVideoWidthKey:  1280,
             AVVideoHeightKey: 720,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey:          4_000_000,
-                AVVideoExpectedSourceFrameRateKey: highFrameRate ? 60 : 30,
-                AVVideoProfileLevelKey:            AVVideoProfileLevelH264HighAutoLevel
-            ]
+            AVVideoCompressionPropertiesKey: props
         ]
     }
 
@@ -39,11 +56,24 @@ class VideoRecorder {
         AVEncoderBitRateKey:   64_000
     ]
 
-    // Call this while the "Preparing…" indicator is visible — does the slow
-    // AVAssetWriter init + startWriting() so the actual record tap is instant.
-    func prepare(highFrameRate: Bool) {
+    /// Thread-safe read of preparation state for UI polling.
+    var isPreparedForRecording: Bool {
         lock.lock()
-        guard !isRecording, !isPrepared else { lock.unlock(); return }
+        let v = isPrepared
+        lock.unlock()
+        return v
+    }
+
+    func prepare(highFrameRate: Bool, codec: RecordingCodec) {
+        lock.lock()
+        guard !isRecording, !isPrepared else { 
+            AppLogger.shared.log("VideoRecorder.prepare: Skipping preparation - isRecording: \(isRecording), isPrepared: \(isPrepared)")
+            lock.unlock(); return 
+        }
+        // Stamp this preparation so we can detect stale completions.
+        let myId = UUID()
+        preparationId = myId
+        AppLogger.shared.log("VideoRecorder.prepare: Starting preparation with ID \(myId)")
         lock.unlock()
 
         let tmp = FileManager.default.temporaryDirectory
@@ -51,13 +81,16 @@ class VideoRecorder {
         let sURL = tmp.appendingPathComponent("secondary_\(UUID().uuidString).mov")
 
         guard let pw = try? AVAssetWriter(outputURL: pURL, fileType: .mov),
-              let sw = try? AVAssetWriter(outputURL: sURL, fileType: .mov) else { return }
+              let sw = try? AVAssetWriter(outputURL: sURL, fileType: .mov) else { 
+            AppLogger.shared.log("VideoRecorder.prepare: Failed to create AVAssetWriters")
+            return 
+        }
 
-        let pvi = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(highFrameRate: highFrameRate))
-        let svi = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(highFrameRate: highFrameRate))
+        let pvi = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(highFrameRate: highFrameRate, codec: codec))
+        let svi = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(highFrameRate: highFrameRate, codec: codec))
         let ai  = AVAssetWriterInput(mediaType: .audio, outputSettings: Self.audioSettings)
 
-        // Rotate 90° CCW so portrait playback is correct (sensor delivers 1280×720 landscape)
+        // Rotate 90 deg CCW so portrait playback is correct (sensor delivers 1280x720 landscape)
         let portrait = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 720, ty: 0)
         pvi.transform = portrait
         svi.transform = portrait
@@ -69,30 +102,70 @@ class VideoRecorder {
         pw.add(pvi); pw.add(ai)
         sw.add(svi)
 
-        // This is the slow part (~100–300 ms) — doing it here instead of at tap time.
+        // This is the slow part (~100-300 ms) -- doing it here instead of at tap time.
+        AppLogger.shared.log("VideoRecorder.prepare: Starting writers...")
         pw.startWriting()
         sw.startWriting()
+        AppLogger.shared.log("VideoRecorder.prepare: Writers started - primary status: \(pw.status.rawValue), secondary status: \(sw.status.rawValue)")
 
         lock.lock()
+        // If cancelPrepare() was called while we were doing the slow work, discard.
+        guard preparationId == myId else {
+            AppLogger.shared.log("VideoRecorder.prepare: Preparation was cancelled during setup (ID mismatch)")
+            lock.unlock()
+            pw.cancelWriting()
+            sw.cancelWriting()
+            try? FileManager.default.removeItem(at: pURL)
+            try? FileManager.default.removeItem(at: sURL)
+            return
+        }
         primaryWriter = pw;   secondaryWriter = sw
         primaryVideoInput = pvi; secondaryVideoInput = svi; audioInput = ai
         primaryURL = pURL;    secondaryURL = sURL
         isPrepared = true;    sessionStarted = false
+        AppLogger.shared.log("VideoRecorder.prepare: Preparation completed successfully - isPrepared=\(isPrepared)")
         lock.unlock()
     }
 
-    // Called at tap — nearly instant because prepare() already ran.
+    /// Cancel any in-flight or completed preparation, cleaning up writers.
+    /// Call this when switching away from video mode or when the session reconfigures.
+    func cancelPrepare() {
+        lock.lock()
+        preparationId = nil  // invalidate any in-flight prepare()
+        guard !isRecording else { 
+            AppLogger.shared.log("VideoRecorder.cancelPrepare: Skipping cancellation - recording in progress")
+            lock.unlock(); return 
+        }
+        let hadPreparedContent = isPrepared
+        AppLogger.shared.log("VideoRecorder.cancelPrepare: Cancelling preparation (was prepared: \(hadPreparedContent))")
+        let pw = primaryWriter
+        let sw = secondaryWriter
+        let pURL = primaryURL
+        let sURL = secondaryURL
+        primaryWriter = nil;     secondaryWriter = nil
+        primaryVideoInput = nil; secondaryVideoInput = nil
+        audioInput = nil
+        primaryURL = nil;        secondaryURL = nil
+        isPrepared = false;      sessionStarted = false
+        lock.unlock()
+
+        // Clean up writers outside the lock to avoid blocking.
+        if let pw, pw.status == .writing { pw.cancelWriting() }
+        if let sw, sw.status == .writing { sw.cancelWriting() }
+        if let pURL { try? FileManager.default.removeItem(at: pURL) }
+        if let sURL { try? FileManager.default.removeItem(at: sURL) }
+    }
+
+    // Called at tap -- nearly instant because prepare() already ran.
+    // Returns nil if not yet prepared; caller should NOT block the main thread.
     func startRecording() -> (primary: URL, secondary: URL)? {
         lock.lock()
-        if !isPrepared {
-            lock.unlock()
-            prepare(highFrameRate: false) // Fallback if not prepared
-            lock.lock()
-        }
         guard isPrepared, let p = primaryURL, let s = secondaryURL else {
+            AppLogger.shared.log("VideoRecorder.startRecording failed - isPrepared: \(isPrepared), primaryURL: \(primaryURL != nil), secondaryURL: \(secondaryURL != nil)")
             lock.unlock(); return nil
         }
         isRecording = true
+        AppLogger.shared.log("VideoRecorder.startRecording success - isRecording set to true")
         lock.unlock()
         return (p, s)
     }
@@ -138,6 +211,7 @@ class VideoRecorder {
         lock.lock()
         guard isRecording, let pURL = primaryURL, let sURL = secondaryURL,
               let pw = primaryWriter, let sw = secondaryWriter else {
+            AppLogger.shared.log("VideoRecorder.stopRecording failed - isRecording: \(isRecording), primaryURL: \(primaryURL != nil), secondaryURL: \(secondaryURL != nil), primaryWriter: \(primaryWriter != nil), secondaryWriter: \(secondaryWriter != nil)")
             lock.unlock(); return nil
         }
         isRecording = false
@@ -148,13 +222,26 @@ class VideoRecorder {
         secondaryVideoInput?.markAsFinished()
         audioInput?.markAsFinished()
 
+        AppLogger.shared.log("VideoRecorder.stopRecording: Finishing writers - primary status: \(pw.status.rawValue), secondary status: \(sw.status.rawValue)")
+        
         await pw.finishWriting()
         await sw.finishWriting()
+        
+        AppLogger.shared.log("VideoRecorder.stopRecording: Writers finished - primary status: \(pw.status.rawValue), secondary status: \(sw.status.rawValue)")
+        
+        // Check for errors
+        if pw.status == .failed, let error = pw.error {
+            AppLogger.shared.log("VideoRecorder.stopRecording: Primary writer failed with error: \(error)")
+        }
+        if sw.status == .failed, let error = sw.error {
+            AppLogger.shared.log("VideoRecorder.stopRecording: Secondary writer failed with error: \(error)")
+        }
 
         primaryWriter = nil;     secondaryWriter = nil
         primaryVideoInput = nil; secondaryVideoInput = nil
         audioInput = nil;        sessionStarted = false
 
+        AppLogger.shared.log("VideoRecorder.stopRecording: Returning URLs - primary: \(pURL.lastPathComponent), secondary: \(sURL.lastPathComponent)")
         return (pURL, sURL)
     }
 
@@ -286,10 +373,13 @@ class VideoRecorder {
                                                preferredTransform: mainTransform,
                                                into: CGRect(origin: .zero, size: renderSize))
             // Pip slot sized to pip's natural ratio → fill == exact fit (no bars, no bleed).
-            let pipW   = renderSize.width * pipWidthFraction
-            let pipH   = pipW * (pipDisp.height / max(pipDisp.width, 1))
-            let margin = renderSize.width * 0.025
-            let halfW  = pipW / 2 + margin, halfH = pipH / 2 + margin
+            let pipW    = renderSize.width * pipWidthFraction
+            let rawPipH = pipW * (pipDisp.height / max(pipDisp.width, 1))
+            // Circle requires square rect so ovalIn: produces a true circle, not an ellipse
+            let pipH    = pipShape == .circle ? pipW : rawPipH
+            let margin  = renderSize.width * 0.025
+            let halfW   = pipW / 2 + margin
+            let halfH   = pipH / 2 + margin
             let cx: CGFloat = pipPosition.x < 0.5 ? halfW : renderSize.width  - halfW
             let cy: CGFloat = pipPosition.y < 0.5 ? halfH : renderSize.height - halfH
             let pipRect = CGRect(x: cx - pipW / 2, y: cy - pipH / 2, width: pipW, height: pipH)
@@ -382,6 +472,10 @@ class VideoRecorder {
             try? audioComp.insertTimeRange(finalTimeRange, of: audioTrack, at: .zero)
         }
 
+        // Corner radius relative to pip width → matches preview's 20pt/108pt ≈ 0.185 ratio
+        // at default pip size, and scales correctly at all display sizes.
+        let pipCornerRadius = (videoPipRect?.width ?? renderSize.width * 0.28) * 0.185
+
         let instruction = DualCamVideoCompositionInstruction(
             timeRange:     finalTimeRange,
             mainTrackID:   mainComp.trackID,
@@ -394,7 +488,7 @@ class VideoRecorder {
             frameStyle:    frameStyle,
             frameColor:    frameColor,
             pipShape:      pipShape,
-            cornerRadius:  renderSize.width * 0.028
+            cornerRadius:  pipCornerRadius
         )
 
         let videoComposition = AVMutableVideoComposition()
@@ -725,11 +819,44 @@ class DualCamVideoCompositor: NSObject, AVVideoCompositing {
                 finalImage = final.outputImage!.cropped(to: renderRect)
 
             } else {
-                // Split / Spotlight: each track fills its slot
-                let comp = CIFilter(name: "CISourceOverCompositing")!
-                comp.setValue(pipImage.cropped(to: renderRect),  forKey: kCIInputImageKey)
-                comp.setValue(mainImage.cropped(to: renderRect), forKey: kCIInputBackgroundImageKey)
-                finalImage = comp.outputImage!.cropped(to: renderRect)
+                // Split / Spotlight: crop each image to its own slot then composite over black.
+                // CISourceOverCompositing with a full-canvas crop would let the opaque pip frame
+                // cover main entirely — slot-cropping ensures they don't overlap.
+                let gap: CGFloat = 4
+                let mainSlot: CGRect
+                let pipSlot: CGRect
+                let W = instr.renderSize.width
+                let H2 = instr.renderSize.height
+
+                switch instr.layoutMode {
+                case .splitH:
+                    let half = (H2 - gap) / 2
+                    mainSlot = CGRect(x: 0, y: 0,          width: W, height: half)
+                    pipSlot  = CGRect(x: 0, y: half + gap,  width: W, height: half)
+                case .splitV:
+                    let half = (W - gap) / 2
+                    mainSlot = CGRect(x: 0,          y: 0, width: half, height: H2)
+                    pipSlot  = CGRect(x: half + gap, y: 0, width: half, height: H2)
+                case .spotH:
+                    let mainH = (H2 - gap) * 0.65
+                    mainSlot = CGRect(x: 0, y: 0,           width: W, height: mainH)
+                    pipSlot  = CGRect(x: 0, y: mainH + gap, width: W, height: H2 - mainH - gap)
+                default:
+                    mainSlot = renderRect
+                    pipSlot  = renderRect
+                }
+
+                let black = CIImage(color: .black).cropped(to: renderRect)
+                let mainCropped = mainImage.cropped(to: mainSlot)
+                let pipCropped  = pipImage.cropped(to: pipSlot)
+
+                let step1 = CIFilter(name: "CISourceOverCompositing")!
+                step1.setValue(mainCropped, forKey: kCIInputImageKey)
+                step1.setValue(black,       forKey: kCIInputBackgroundImageKey)
+                let step2 = CIFilter(name: "CISourceOverCompositing")!
+                step2.setValue(pipCropped,        forKey: kCIInputImageKey)
+                step2.setValue(step1.outputImage, forKey: kCIInputBackgroundImageKey)
+                finalImage = step2.outputImage!.cropped(to: renderRect)
             }
 
             // Flip back to pixel-buffer storage order (Y-down / top-first)

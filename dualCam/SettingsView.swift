@@ -10,6 +10,7 @@ struct SettingsView: View {
 
     @State private var showingHighQualityWarning = false
     @State private var showingLogs = false
+    @State private var showingWelcome = false
 
     var body: some View {
         NavigationStack {
@@ -40,6 +41,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingLogs) {
                 LogsView()
+            }
+            .sheet(isPresented: $showingWelcome) {
+                WelcomeView()
             }
         }
     }
@@ -268,6 +272,15 @@ struct SettingsView: View {
                     }
                 }
             }
+            settingsRow("Recording Codec", icon: "bolt.badge.clock", note: settings.recordingCodec.note) {
+                Picker("", selection: $settings.recordingCodec) {
+                    ForEach(RecordingCodec.allCases) { c in
+                        Text(c.rawValue).tag(c)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
             settingsRow("Preview After Capture", icon: "photo.circle", note: "Review & share immediately") {
                 Toggle("", isOn: $settings.showCapturePreview).labelsHidden()
             }
@@ -303,6 +316,24 @@ struct SettingsView: View {
             }
             settingsRow("Reset Zoom on Swap", icon: "1.magnifyingglass", note: "Returns to 1× when double-tapping to swap") {
                 Toggle("", isOn: $settings.zoomResetOnSwap).labelsHidden()
+            }
+            Button {
+                showingWelcome = true
+            } label: {
+                HStack {
+                    Label {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Show Welcome Screen")
+                            Text("View the app introduction again").font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "hand.wave")
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
             HStack {
                 Label {

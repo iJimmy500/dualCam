@@ -1,8 +1,11 @@
 import AVFoundation
 import Photos
 import UIKit
+import SwiftUI
 import BackgroundTasks
 import ActivityKit
+import UserNotifications
+import Combine
 
 // Processing task model for background queue
 struct ProcessingTask: Identifiable {
@@ -64,22 +67,43 @@ class CaptureManager: NSObject, ObservableObject {
     @Published var processingStatusMessage = ""
     @Published var errorMessage: String?
     @Published var pipPosition  = CGPoint(x: 0.8, y: 0.2)
-    @Published var layoutMode: LayoutMode       = .pip
-    @Published var pipWidth: CGFloat            = 108
-    @Published var displayWidth: CGFloat        = UIScreen.main.bounds.width
-    @Published var aspectRatio: AspectRatio     = .r4_3
-    @Published var pipFrameStyle: PipFrameStyle = .glass
-    @Published var pipFrameColor: PipFrameColor = .white
-    @Published var pipShape: PipShape           = .roundedRect
+    
+    // System monitoring
+    @Published var thermalWarningMessage: String?
+    @Published var powerOptimizationMessage: String?
+    @Published var isPerformanceReduced = false
+    
+    private let systemMonitor = SystemMonitor.shared
+    private let backgroundManager = BackgroundManager.shared
+    // These settings are read at capture/record time so they must always reflect the
+    // current UserDefaults value — not a potentially-stale @Published copy.
+    var layoutMode: LayoutMode {
+        LayoutMode(rawValue: UserDefaults.standard.string(forKey: "layoutMode") ?? "") ?? .pip
+    }
+    var aspectRatio: AspectRatio {
+        AspectRatio(rawValue: UserDefaults.standard.string(forKey: "aspectRatio") ?? "") ?? .r4_3
+    }
+    var pipFrameStyle: PipFrameStyle {
+        PipFrameStyle(rawValue: UserDefaults.standard.string(forKey: "pipFrameStyle") ?? "") ?? .glass
+    }
+    var pipFrameColor: PipFrameColor {
+        PipFrameColor(rawValue: UserDefaults.standard.string(forKey: "pipFrameColor") ?? "") ?? .white
+    }
+    var pipShape: PipShape {
+        PipShape(rawValue: UserDefaults.standard.string(forKey: "pipShape") ?? "") ?? .roundedRect
+    }
+    var videoQuality: VideoQuality {
+        VideoQuality(rawValue: UserDefaults.standard.string(forKey: "videoQuality") ?? "") ?? .medium
+    }
+    var autoSaveRawFeeds: Bool {
+        UserDefaults.standard.bool(forKey: "autoSaveRawFeeds")
+    }
     var showWatermark: Bool {
         get { UserDefaults.standard.object(forKey: "showWatermark") as? Bool ?? true }
-        set {
-            objectWillChange.send()
-            UserDefaults.standard.set(newValue, forKey: "showWatermark")
-        }
+        set { UserDefaults.standard.set(newValue, forKey: "showWatermark") }
     }
-    @Published var videoQuality: VideoQuality   = .medium
-    @Published var autoSaveRawFeeds: Bool       = false
+    @Published var pipWidth: CGFloat            = 108
+    @Published var displayWidth: CGFloat        = UIScreen.main.bounds.width
     @Published var isLiveModeActive             = false
     @Published private(set) var isLivePhotoAvailable = false
     @Published var flashMode: AVCaptureDevice.FlashMode = .auto {
@@ -93,8 +117,14 @@ class CaptureManager: NSObject, ObservableObject {
     @Published private(set) var primaryPreviewLayer = AVCaptureVideoPreviewLayer()
     @Published private(set) var secondaryPreviewLayer = AVCaptureVideoPreviewLayer()
     @Published var rawCapturedURLs: (primary: URL, secondary: URL)? = nil
+    @Published var isVideoRecorderReady = false
+    @Published var recordingCodec: RecordingCodec = .hevcSafe
+    @Published var recentVideoItem: MediaItem? = nil
 
     let session = AVCaptureMultiCamSession()
+
+    /// Best virtual back camera detected at startup — drives real lens switching via videoZoomFactor.
+    private(set) var detectedBackCamera: AVCaptureDevice? = nil
 
     private var primaryPhotoOutput = AVCapturePhotoOutput()
     private var secondaryPhotoOutput = AVCapturePhotoOutput()
@@ -113,17 +143,20 @@ class CaptureManager: NSObject, ObservableObject {
     private var videoCaptureAspectRatio: AspectRatio? = nil
     private var videoCaptureHighFrameRate: Bool = false
     @Published var recordingSecondsElapsed: Int = 0
-    
+    private var focusTask: Task<Void, Never>?   // cancellable; prevents stacked focus timers
+
     // Background processing support
     @Published var processingQueue: [ProcessingTask] = []
     @Published var isBackgroundProcessingEnabled = true
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
     private var currentProcessingTask: ProcessingTask?
+    private var activeProcessingTask: Task<Void, Never>?  // cancellable processing task
     
     // Live Activity support
     private let liveActivityManager = LiveActivityManager()
     static var maxRecordingSeconds: Int {
-        UserDefaults.standard.bool(forKey: "extendedRecording") ? 600 : 150
+        let v = UserDefaults.standard.integer(forKey: "recordingLimitSeconds")
+        return v > 0 ? v : 150
     }
 
     private var pendingPrimaryPhotoData: Data?
@@ -144,8 +177,14 @@ class CaptureManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        isSupported  = AVCaptureMultiCamSession.isMultiCamSupported
-        isConfiguring = true  // Keep overlay up until session is actually running
+        isSupported = AVCaptureMultiCamSession.isMultiCamSupported
+        
+        // Setup system monitoring
+        backgroundManager.register(captureManager: self)
+        setupSystemMonitoring()
+        
+        // isConfiguring starts false; the loading overlay stays visible because
+        // isSessionRunning is also false — see cameraContent's overlay condition.
 
         // Restore persisted settings
         if let raw = UserDefaults.standard.object(forKey: "flashMode") as? Int,
@@ -158,9 +197,89 @@ class CaptureManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - System Monitoring
+
+    private func setupSystemMonitoring() {
+        systemMonitor.startMonitoring()
+        
+        // Monitor thermal state changes
+        systemMonitor.$thermalState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] thermalState in
+                self?.handleThermalStateChange(thermalState)
+            }
+            .store(in: &cancellables)
+        
+        // Monitor power state changes
+        systemMonitor.$lowPowerModeEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] lowPowerMode in
+                self?.handlePowerStateChange(lowPowerMode)
+            }
+            .store(in: &cancellables)
+        
+        // Update warning messages
+        updateSystemWarnings()
+    }
+    
+    private func handleThermalStateChange(_ thermalState: ProcessInfo.ThermalState) {
+        AppLogger.shared.log("CaptureManager: Thermal state changed to \(thermalState.description)")
+        
+        switch thermalState {
+        case .critical:
+            // Stop recording if critical
+            if isRecording {
+                stopRecording()
+                errorMessage = "Recording stopped due to device overheating. Please let your device cool down."
+            }
+            isPerformanceReduced = true
+            
+        case .serious:
+            // Reduce performance but continue
+            isPerformanceReduced = true
+            
+        case .fair, .nominal:
+            isPerformanceReduced = false
+            
+        @unknown default:
+            break
+        }
+        
+        updateSystemWarnings()
+    }
+    
+    private func handlePowerStateChange(_ lowPowerMode: Bool) {
+        AppLogger.shared.log("CaptureManager: Low power mode \(lowPowerMode ? "enabled" : "disabled")")
+        
+        // Compare raw values: nominal(0), fair(1), serious(2), critical(3)
+        isPerformanceReduced = lowPowerMode || systemMonitor.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+        updateSystemWarnings()
+    }
+    
+    private func updateSystemWarnings() {
+        thermalWarningMessage = systemMonitor.thermalWarningMessage
+        powerOptimizationMessage = systemMonitor.powerOptimizationMessage
+    }
+    
+    // Apply performance optimizations based on system state
+    func getOptimizedSettings() -> (codec: RecordingCodec, quality: VideoQuality) {
+        return (systemMonitor.recommendedCodec, systemMonitor.recommendedQuality)
+    }
+    
+    private var cancellables = Set<AnyCancellable>()
+
     // MARK: - Setup
 
     func checkPermissionsAndSetup() async {
+        // Guard against re-entry: SwiftUI .task can re-fire if the view disappears
+        // and reappears (backgrounding, fullScreenCover on some iOS versions). Re-running
+        // configureSession on a live session would tear down all inputs mid-capture.
+        guard !isSessionRunning, !isConfiguring else {
+            AppLogger.shared.log("checkPermissionsAndSetup: already running — skipping")
+            return
+        }
+        isConfiguring = true
+
         guard isSupported else {
             isConfiguring = false
             errorMessage = "Multi-cam not supported on this device (requires iPhone XS/XR or newer)."
@@ -170,6 +289,7 @@ class CaptureManager: NSObject, ObservableObject {
         let hasPermissions = await requestPermissions()
         guard hasPermissions else { isConfiguring = false; return }
 
+        detectBackCamera()
         setupAudioSession()
         configureSession(pair: currentPair)
     }
@@ -306,8 +426,10 @@ class CaptureManager: NSObject, ObservableObject {
             device.unlockForConfiguration()
         } catch {}
         focusPoint = point
-        Task { @MainActor in
+        focusTask?.cancel()
+        focusTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
             focusPoint = nil
         }
     }
@@ -342,6 +464,172 @@ class CaptureManager: NSObject, ObservableObject {
     var supportsZoom: Bool {
         guard let device = getCurrentPrimaryDevice() else { return false }
         return device.activeFormat.videoMaxZoomFactor > 1.0
+    }
+
+    // MARK: - Zoom Presets
+
+    struct ZoomPreset: Identifiable {
+        let id: String
+        let label: String
+        let zoom: CGFloat
+        // true = secondary camera should be the visual main (isSwapped=true)
+        let wantsSwapped: Bool
+    }
+
+    var zoomPresets: [ZoomPreset] {
+        switch currentPair {
+        case .frontAndBack:
+            return presetsForDetectedBackCamera()
+        case .wideAndUltrawide:
+            return [
+                ZoomPreset(id: "0.5", label: ".5×", zoom: 1.0, wantsSwapped: true),
+                ZoomPreset(id: "1",   label: "1×",  zoom: 1.0, wantsSwapped: false),
+                ZoomPreset(id: "2",   label: "2×",  zoom: 2.0, wantsSwapped: false),
+                ZoomPreset(id: "3",   label: "3×",  zoom: 3.0, wantsSwapped: false),
+            ]
+        case .wideAndTelephoto:
+            return [
+                ZoomPreset(id: "1",    label: "1×",   zoom: 1.0, wantsSwapped: false),
+                ZoomPreset(id: "2",    label: "2×",   zoom: 2.0, wantsSwapped: false),
+                ZoomPreset(id: "tele", label: "Tele", zoom: 1.0, wantsSwapped: true),
+            ]
+        case .ultraAndFront:
+            return [
+                ZoomPreset(id: "0.5", label: ".5×", zoom: 1.0, wantsSwapped: false),
+                ZoomPreset(id: "1",   label: "1×",  zoom: 1.0, wantsSwapped: true),
+            ]
+        case .telephotoAndFront:
+            return [
+                ZoomPreset(id: "tele", label: "Tele", zoom: 1.0, wantsSwapped: false),
+                ZoomPreset(id: "1",    label: "1×",   zoom: 1.0, wantsSwapped: true),
+            ]
+        case .ultrawideAndTelephoto:
+            return [
+                ZoomPreset(id: "0.5",  label: ".5×",  zoom: 1.0, wantsSwapped: false),
+                ZoomPreset(id: "tele", label: "Tele",  zoom: 1.0, wantsSwapped: true),
+            ]
+        }
+    }
+
+    /// Builds presets from the virtual back camera's actual lens-switchover zoom factors.
+    /// iOS physically switches lenses at those thresholds — no digital zoom needed.
+    private func presetsForDetectedBackCamera() -> [ZoomPreset] {
+        guard let device = detectedBackCamera else {
+            return [ZoomPreset(id: "1", label: "1×", zoom: 1.0, wantsSwapped: false)]
+        }
+
+        let switches = device.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat($0.floatValue) }
+        let type = device.deviceType
+
+        switch switches.count {
+        case 0:
+            // Single physical lens — only a 1× preset
+            return [ZoomPreset(id: "1", label: "1×", zoom: 1.0, wantsSwapped: false)]
+
+        case 1:
+            let switchZoom = switches[0]
+            if type == .builtInDualWideCamera {
+                // Wide + Ultrawide: base = ultrawide, switch to wide at switchZoom
+                return [
+                    ZoomPreset(id: "ultra", label: ".5×", zoom: 1.0,        wantsSwapped: false),
+                    ZoomPreset(id: "wide",  label: "1×",  zoom: switchZoom,  wantsSwapped: false),
+                ]
+            } else {
+                // Wide + Tele: base = wide, switch to tele at switchZoom
+                let teleOptical = Int(switchZoom.rounded())
+                return [
+                    ZoomPreset(id: "wide", label: "1×",             zoom: 1.0,       wantsSwapped: false),
+                    ZoomPreset(id: "tele", label: "\(teleOptical)×", zoom: switchZoom, wantsSwapped: false),
+                ]
+            }
+
+        default:
+            // Triple camera: ultrawide at 1.0, wide at switches[0], tele at switches[1]
+            let wideZoom = switches[0]
+            let teleZoom = switches[1]
+            let teleOptical = (teleZoom / wideZoom).rounded()
+            let teleLabel = teleOptical == teleOptical.rounded() ? "\(Int(teleOptical))×" : String(format: "%.1f×", teleOptical)
+            return [
+                ZoomPreset(id: "ultra", label: ".5×",     zoom: 1.0,      wantsSwapped: false),
+                ZoomPreset(id: "wide",  label: "1×",      zoom: wideZoom,  wantsSwapped: false),
+                ZoomPreset(id: "tele",  label: teleLabel,  zoom: teleZoom,  wantsSwapped: false),
+            ]
+        }
+    }
+
+    /// Active preset: nil when between presets. Uses relative tolerance so it works
+    /// across all zoom scales (1×, 2×, 6×, etc.).
+    var activePresetID: String? {
+        if currentPair == .frontAndBack {
+            return zoomPresets.first { abs($0.zoom - zoom) <= max(0.2, $0.zoom * 0.1) }?.id
+        }
+        return zoomPresets.first { $0.wantsSwapped == isSwapped && abs($0.zoom - zoom) < 0.15 }?.id
+    }
+
+    func applyZoomPreset(_ preset: ZoomPreset) {
+        AppLogger.shared.log("Zoom preset: \(preset.label) (swap=\(preset.wantsSwapped), zoom=\(preset.zoom)×, pair=\(currentPair.rawValue))")
+        // frontAndBack uses a virtual device — iOS handles lens switching via videoZoomFactor,
+        // no camera swap needed. Other pairs use physical-device swaps to reach different lenses.
+        if currentPair != .frontAndBack && preset.wantsSwapped != isSwapped {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { swapCameras() }
+        }
+        setZoom(preset.zoom)
+    }
+
+    // MARK: - Front Camera Mirror
+
+    /// Mirrors the secondary preview layer when pair is front+back and setting is on.
+    func applyFrontCameraMirror() {
+        let mirrored = UserDefaults.standard.bool(forKey: "mirrorFrontCamera")
+        // Only meaningful for front+back; other pairs don't show a front camera as secondary
+        guard currentPair == .frontAndBack else {
+            secondaryPreviewLayer.transform = CATransform3DIdentity
+            return
+        }
+        secondaryPreviewLayer.transform = mirrored
+            ? CATransform3DMakeScale(-1, 1, 1)
+            : CATransform3DIdentity
+    }
+
+    // MARK: - Volume Button Shutter
+
+    private var volumeObserver: NSKeyValueObservation?
+
+    func startVolumeObservation() {
+        guard volumeObserver == nil else { return }
+        volumeObserver = AVAudioSession.sharedInstance().observe(
+            \.outputVolume, options: [.new, .old]
+        ) { [weak self] _, change in
+            guard let self,
+                  UserDefaults.standard.bool(forKey: "volumeShutter"),
+                  let old = change.oldValue, let new = change.newValue,
+                  old != new          // real button press, not programmatic reset
+            else { return }
+            Task { @MainActor in
+                NotificationCenter.default.post(name: .dualCamVolumeShutter, object: nil)
+            }
+        }
+        AppLogger.shared.log("Volume button shutter: observation started")
+    }
+
+    func stopVolumeObservation() {
+        volumeObserver?.invalidate()
+        volumeObserver = nil
+    }
+
+    // MARK: - Back Camera Detection
+
+    private func detectBackCamera() {
+        let types: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera,
+            .builtInDualWideCamera,
+            .builtInDualCamera,
+            .builtInWideAngleCamera
+        ]
+        detectedBackCamera = types.compactMap {
+            AVCaptureDevice.default($0, for: .video, position: .back)
+        }.first
+        AppLogger.shared.log("Back camera detected: \(detectedBackCamera?.deviceType.rawValue ?? "none")")
     }
 
     // MARK: - Session Configuration
@@ -408,6 +696,18 @@ class CaptureManager: NSObject, ObservableObject {
 
             guard session.canAddInput(primaryInput), session.canAddInput(secondaryInput) else {
                 session.commitConfiguration()
+                // Virtual back camera rejected by this MultiCam configuration — fall back to
+                // the physical wide-angle camera and retry once. This handles devices where
+                // builtInTripleCamera / builtInDualWideCamera aren't MultiCam-compatible.
+                if pair == .frontAndBack,
+                   let currentBack = detectedBackCamera,
+                   currentBack.deviceType != .builtInWideAngleCamera,
+                   let wideAngle = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
+                    AppLogger.shared.log("configureSession: virtual device rejected — falling back to builtInWideAngleCamera")
+                    detectedBackCamera = wideAngle
+                    configureSession(pair: pair)
+                    return
+                }
                 errorMessage = "Cannot add camera inputs to session."
                 isConfiguring = false
                 return
@@ -492,11 +792,15 @@ class CaptureManager: NSObject, ObservableObject {
         }
 
         configurationProgress = 0.95
-        configurationStatusMessage = "Enabling live photo capture..."
+        configurationStatusMessage = "Configuring live photo capture..."
 
-        // Enable live photo capture on the primary output if hardware supports it
+        // Attempt to enable live photo capture. AVCaptureMultiCamSession may or may not
+        // allow it depending on the active configuration — check support first.
         if primaryPhotoOutput.isLivePhotoCaptureSupported {
             primaryPhotoOutput.isLivePhotoCaptureEnabled = true
+            print("Live Photo capture enabled successfully")
+        } else {
+            print("Live Photo capture not supported on this device/configuration")
         }
 
         session.commitConfiguration()
@@ -509,15 +813,21 @@ class CaptureManager: NSObject, ObservableObject {
             self.primaryPreviewLayer = newPrimaryLayer
             self.secondaryPreviewLayer = newSecondaryLayer
             self.isLivePhotoAvailable = self.primaryPhotoOutput.isLivePhotoCaptureEnabled
-            print("✅ Updated preview layers — live photo: \(self.isLivePhotoAvailable)")
+            print("Updated preview layers — live photo: \(self.isLivePhotoAvailable)")
+            // Apply front-camera mirror to the secondary layer if needed
+            self.applyFrontCameraMirror()
         }
 
         _outputLock.lock()
+        let oldRecorder = _recorder
         _primaryVideoOutput   = primaryVideoOutput
         _secondaryVideoOutput = secondaryVideoOutput
         _audioOutput          = audioOutput
         _recorder             = VideoRecorder()
         _outputLock.unlock()
+        // Clean up any prepared-but-unused writers from the previous session.
+        oldRecorder.cancelPrepare()
+        isVideoRecorderReady = false
 
         let captureSession = session
         Task.detached(priority: .userInitiated) {
@@ -546,7 +856,8 @@ class CaptureManager: NSObject, ObservableObject {
     private func devicesFor(pair: CameraPair) -> (AVCaptureDevice, AVCaptureDevice)? {
         switch pair {
         case .frontAndBack:
-            guard let back = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+            guard let back = detectedBackCamera
+                          ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
                   let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
             else { return nil }
             return (back, front)
@@ -586,6 +897,7 @@ class CaptureManager: NSObject, ObservableObject {
     // MARK: - Photo Capture
 
     func capturePhoto() {
+        AppLogger.shared.log("capturePhoto: pair=\(currentPair.rawValue) layout=\(layoutMode) flash=\(flashMode.displayName) live=\(isLiveModeActive)")
         photoCapturePair          = currentPair
         photoCaptureLayout        = layoutMode
         photoCapturePipWidth      = pipWidth
@@ -617,6 +929,7 @@ class CaptureManager: NSObject, ObservableObject {
 
     // Delayed dual capture: primary fires immediately, secondary fires after a countdown.
     func captureDelayedPrimary() {
+        AppLogger.shared.log("captureDelayedPrimary: firing primary now, awaiting secondary")
         photoCapturePair          = currentPair
         photoCaptureLayout        = layoutMode
         photoCapturePipWidth      = pipWidth
@@ -635,6 +948,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     func captureDelayedSecondary() {
+        AppLogger.shared.log("captureDelayedSecondary: firing secondary after delay")
         guard awaitingDelayedSecondary else { return }
         awaitingDelayedSecondary = false
         let settings = AVCapturePhotoSettings()
@@ -645,20 +959,35 @@ class CaptureManager: NSObject, ObservableObject {
         guard let primaryData = pendingPrimaryPhotoData,
               let secondaryData = pendingSecondaryPhotoData,
               let primaryImg = UIImage(data: primaryData),
-              let secondaryImg = UIImage(data: secondaryData) else { return }
+              let secondaryImg = UIImage(data: secondaryData) else {
+            AppLogger.shared.log("finishPhotoCapture: missing data — aborting composite")
+            return
+        }
+        AppLogger.shared.log("finishPhotoCapture: compositing \(photoCaptureLayout) pair=\(photoCapturePair.rawValue) swapped=\(photoCaptureIsSwapped)")
 
         pendingPrimaryPhotoData = nil
         pendingSecondaryPhotoData = nil
 
         // Respect swap: the full-screen camera becomes the main image in the composite
-        let mainImg = photoCaptureIsSwapped ? secondaryImg : primaryImg
-        let pipImg  = photoCaptureIsSwapped ? primaryImg   : secondaryImg
+        var mainImg = photoCaptureIsSwapped ? secondaryImg : primaryImg
+        var pipImg  = photoCaptureIsSwapped ? primaryImg   : secondaryImg
+
+        // Mirror front camera: flip the front-camera image horizontally to match preview
+        if photoCapturePair == .frontAndBack,
+           UserDefaults.standard.bool(forKey: "mirrorFrontCamera") {
+            // Secondary is front camera regardless of swap
+            let flipped = secondaryImg.flippedHorizontally()
+            if photoCaptureIsSwapped { mainImg = flipped } else { pipImg = flipped }
+        }
 
         let rawComposite = makeComposite(main: mainImg, pip: pipImg,
                                          layout: photoCaptureLayout,
                                          pipWidthFraction: photoCapturePipWidth / max(displayWidth, 1))
-        var composite = cropToAspectRatio(rawComposite, ratio: photoCaptureAspectRatio.ratio)
-
+        // Aspect ratio crop only applies to PiP — split/spotlight have their own inherent canvas
+        // shape (square / 4:5) and additional cropping would chop off part of each panel.
+        let composite = photoCaptureLayout == .pip
+            ? cropToAspectRatio(rawComposite, ratio: photoCaptureAspectRatio.ratio)
+            : rawComposite
 
         let item = MediaItem(type: .photo, pair: photoCapturePair)
         item.primaryImage = composite
@@ -686,6 +1015,7 @@ class CaptureManager: NSObject, ObservableObject {
                     }
                 }
                 await flashSavedBanner()
+                sendSavedNotification(title: "Photo Saved", body: "Your dual-camera photo was saved to the camera roll.")
             } catch {
                 print("Failed to save photo to photo library: \(error)")
             }
@@ -819,12 +1149,14 @@ class CaptureManager: NSObject, ObservableObject {
             drawFill(main, in: CGRect(origin: .zero, size: main.size), context: ctx)
 
             let fraction = widthFraction.clamped(to: 0.18...0.40)
-            // Use pip's natural aspect ratio for the pip rect so content is never squashed
             let pipNatural = pip.size  // already orientation-corrected by UIKit
             let pipW   = main.size.width * fraction
-            let pipH   = pipW * (pipNatural.height / max(pipNatural.width, 1))
+            let rawPipH = pipW * (pipNatural.height / max(pipNatural.width, 1))
+            // Circle requires a square rect so ovalIn: produces a true circle, not an ellipse
+            let pipH   = photoCapturePipShape == .circle ? pipW : rawPipH
             let margin = main.size.width * 0.025
-            let radius = main.size.width * 0.028
+            // Radius relative to pip width matches the preview's 20pt/108pt ≈ 0.185 ratio
+            let radius = pipW * 0.185
 
             let halfW = pipW / 2 + margin
             let halfH = pipH / 2 + margin
@@ -891,17 +1223,34 @@ class CaptureManager: NSObject, ObservableObject {
     // MARK: - Video Capture
 
     func prepareForRecording(highFrameRate: Bool) {
-        // Runs prepare() on a background thread so startWriting() doesn't block the UI.
+        _recorder.cancelPrepare()
+        isVideoRecorderReady = false
+
         let recorder = _recorder
-        Task.detached(priority: .userInitiated) { recorder.prepare(highFrameRate: highFrameRate) }
+        let codec = recordingCodec
+        AppLogger.shared.log("prepareForRecording: HFR=\(highFrameRate) codec=\(codec.rawValue)")
+        Task.detached(priority: .userInitiated) { [weak self] in
+            recorder.prepare(highFrameRate: highFrameRate, codec: codec)
+            await MainActor.run {
+                if recorder.isPreparedForRecording {
+                    self?.isVideoRecorderReady = true
+                }
+            }
+        }
+    }
+
+    func cancelVideoRecorderPrep() {
+        _recorder.cancelPrepare()
+        isVideoRecorderReady = false
     }
 
     func startRecording(highFrameRate: Bool) {
         guard !_recorder.isRecording else { return }
         guard _recorder.startRecording() != nil else {
-            errorMessage = "Could not start recording."
+            AppLogger.shared.log("startRecording: recorder not ready — ignoring")
             return
         }
+        AppLogger.shared.log("startRecording: started (HFR=\(highFrameRate), limit=\(CaptureManager.maxRecordingSeconds)s, pair=\(currentPair.rawValue))")
         isRecording = true
         videoCaptureAspectRatio = aspectRatio
         videoCaptureHighFrameRate = highFrameRate
@@ -918,8 +1267,11 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     func stopRecording() {
+        AppLogger.shared.log("stopRecording: elapsed=\(recordingSecondsElapsed)s pair=\(currentPair.rawValue) layout=\(layoutMode)")
         recordingTimer?.invalidate()
         recordingTimer = nil
+        isRecording = false          // clear immediately so UI stops showing the recording state
+        isVideoRecorderReady = false // disable the record button until the recorder fully resets
         let swapped    = isSwapped
         let pair       = currentPair
         let layout     = layoutMode
@@ -934,8 +1286,17 @@ class CaptureManager: NSObject, ObservableObject {
         let autoRaw    = autoSaveRawFeeds
         
         Task {
-            guard let urls = await _recorder.stopRecording() else { return }
-            isRecording = false
+            guard let urls = await _recorder.stopRecording() else { 
+                AppLogger.shared.log("stopRecording: VideoRecorder.stopRecording() returned nil - processing aborted")
+                await MainActor.run {
+                    self.errorMessage = "Failed to stop recording properly. Please try recording again."
+                    self.isVideoRecorderReady = false
+                    self.recordingSecondsElapsed = 0
+                }
+                return 
+            }
+            AppLogger.shared.log("stopRecording: VideoRecorder returned URLs successfully - starting processing")
+            isVideoRecorderReady = false
             recordingSecondsElapsed = 0
             
             // Create processing task
@@ -963,12 +1324,21 @@ class CaptureManager: NSObject, ObservableObject {
                 // Process immediately in foreground
                 processVideoTask(task, inBackground: false)
             }
+            
+            // Auto-prepare for the next recording so the user doesn't have to
+            // switch modes. Uses the same highFrameRate that was active.
+            // Delay this slightly to ensure the previous recording resources are fully cleaned up
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                self.prepareForRecording(highFrameRate: snapHFR)
+            }
         }
     }
     
     private func processVideoTask(_ task: ProcessingTask, inBackground: Bool) {
         guard !isProcessingVideo else { return }
-        
+
+        activeProcessingTask?.cancel()
         isProcessingVideo = true
         processingProgress = 0.0
         processingStatusMessage = "Starting video processing..."
@@ -980,7 +1350,7 @@ class CaptureManager: NSObject, ObservableObject {
             liveActivityManager.startVideoProcessingActivity(videosInQueue: processingQueue.count + 1)
         }
         
-        Task.detached(priority: .userInitiated) {
+        activeProcessingTask = Task.detached(priority: .userInitiated) {
             await MainActor.run { [weak self] in
                 self?.processingProgress = 0.1
                 self?.processingStatusMessage = "Preparing video merge..."
@@ -1049,8 +1419,13 @@ class CaptureManager: NSObject, ObservableObject {
                     
                     let item = MediaItem(type: .video, pair: task.pair)
                     item.primaryVideoURL = merged
-                    item.thumbnail = self.thumbnailFrom(url: merged)
                     self.capturedItems.insert(item, at: 0)
+                    // Generate thumbnail off the main thread — copyCGImage is synchronous and slow
+                    let mergedForThumb = merged
+                    Task.detached(priority: .utility) {
+                        let thumb = self.thumbnailFrom(url: mergedForThumb)
+                        await MainActor.run { item.thumbnail = thumb }
+                    }
                     
                     Task {
                         do {
@@ -1058,6 +1433,7 @@ class CaptureManager: NSObject, ObservableObject {
                                 PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: merged)
                             }
                             await self.flashSavedBanner()
+                            self.sendSavedNotification(title: "Video Saved", body: "Your dual-camera video is ready in the camera roll.")
                             
                             await MainActor.run { [weak self] in
                                 self?.processingProgress = 1.0
@@ -1073,17 +1449,20 @@ class CaptureManager: NSObject, ObservableObject {
                                 }
                                 
                                 // Auto-delay clear the success message
+                                let savedItem = item
                                 Task { @MainActor in
                                     try? await Task.sleep(for: .seconds(2))
                                     self?.isProcessingVideo = false
                                     self?.processingProgress = 0.0
                                     self?.processingStatusMessage = ""
                                     self?.currentProcessingTask = nil
-                                    
+                                    // Signal preview AFTER the loading overlay is gone
+                                    self?.recentVideoItem = savedItem
+
                                     if inBackground {
                                         self?.endBackgroundTask()
                                     }
-                                    
+
                                     // Process next item in queue
                                     self?.processNextVideoInQueue()
                                 }
@@ -1150,6 +1529,8 @@ class CaptureManager: NSObject, ObservableObject {
     }
     
     func cancelCurrentProcessing() {
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
         isProcessingVideo = false
         processingProgress = 0.0
         processingStatusMessage = ""
@@ -1168,7 +1549,16 @@ class CaptureManager: NSObject, ObservableObject {
         }
     }
 
-    private func thumbnailFrom(url: URL?) -> UIImage? {
+    private func sendSavedNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    nonisolated private func thumbnailFrom(url: URL?) -> UIImage? {
         guard let url else { return nil }
         let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
@@ -1185,12 +1575,20 @@ class CaptureManager: NSObject, ObservableObject {
 extension CaptureManager: AVCapturePhotoCaptureDelegate {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
                                   didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        guard error == nil, let data = photo.fileDataRepresentation() else { return }
+        if let error {
+            AppLogger.shared.log("photoOutput error: \(error.localizedDescription)")
+            return
+        }
+        guard let data = photo.fileDataRepresentation() else {
+            AppLogger.shared.log("photoOutput: no file data representation")
+            return
+        }
         let exifFlash = (photo.metadata["{Exif}"] as? [String: Any])?["Flash"] as? Int ?? 0
         let actuallyFired = (exifFlash & 0x1) != 0
 
         Task { @MainActor in
             if actuallyFired {
+                AppLogger.shared.log("photoOutput: flash fired")
                 flashFired = true
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(120))
@@ -1198,12 +1596,15 @@ extension CaptureManager: AVCapturePhotoCaptureDelegate {
                 }
             }
             if output === primaryPhotoOutput {
+                AppLogger.shared.log("photoOutput: primary received (\(data.count / 1024)KB)")
                 pendingPrimaryPhotoData = data
-                livePhotoStillData = data      // stash for possible live photo save
+                livePhotoStillData = data
             } else {
+                AppLogger.shared.log("photoOutput: secondary received (\(data.count / 1024)KB)")
                 pendingSecondaryPhotoData = data
             }
             if pendingPrimaryPhotoData != nil && pendingSecondaryPhotoData != nil {
+                AppLogger.shared.log("photoOutput: both received — compositing")
                 finishPhotoCapture()
             }
         }
@@ -1220,10 +1621,17 @@ extension CaptureManager: AVCapturePhotoCaptureDelegate {
     }
     
     // MARK: - Video Processing Controls
-    
+
     func cancelProcessing() {
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
         isProcessingVideo = false
+        processingProgress = 0.0
+        processingStatusMessage = ""
+        currentProcessingTask = nil
         rawCapturedURLs = nil
+        liveActivityManager.cancelActivity()
+        endBackgroundTask()
     }
     
     func saveBothVideosSeparately() {
@@ -1261,6 +1669,10 @@ extension CaptureManager: AVCapturePhotoCaptureDelegate {
     }
 }
 
+extension Notification.Name {
+    static let dualCamVolumeShutter = Notification.Name("com.dualcam.volumeShutter")
+}
+
 // MARK: - Sample Buffer Delegates
 
 extension CaptureManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
@@ -1280,6 +1692,18 @@ extension CaptureManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             rec.appendSecondaryVideo(sampleBuffer)
         } else if output === ao {
             rec.appendAudio(sampleBuffer)
+        }
+    }
+}
+
+private extension UIImage {
+    func flippedHorizontally() -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = scale
+        return UIGraphicsImageRenderer(size: size, format: fmt).image { ctx in
+            ctx.cgContext.translateBy(x: size.width, y: 0)
+            ctx.cgContext.scaleBy(x: -1, y: 1)
+            draw(in: CGRect(origin: .zero, size: size))
         }
     }
 }
