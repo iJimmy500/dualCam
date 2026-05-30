@@ -7,7 +7,7 @@
       "bundleIdentifier": "com.personal.dualCam",
       "developerName": "iJimmy500",
       "subtitle": "Dual-camera capture for any iPhone",
-      "localizedDescription": "Capture simultaneous video from two cameras — front + back, ultra-wide + front, or wide + telephoto — merged into one video in real time.\n\nWorks on iPhone XS or newer running iOS 18+. No Apple TV 17 required.",
+      "localizedDescription": "Capture simultaneous video from two cameras \u2014 front + back, ultra-wide + front, or wide + telephoto \u2014 merged into one video in real time.\n\nWorks on iPhone XS or newer running iOS 18+. No Apple TV 17 required.",
       "iconURL": "https://raw.githubusercontent.com/iJimmy500/dualCam/main/noticedicon.png",
       "tintColor": "111111",
       "screenshotURLs": [],
@@ -15,7 +15,7 @@
       "versionDate": "2026-05-30",
       "versionDescription": "Initial release",
       "downloadURL": "https://github.com/iJimmy500/dualCam/releases/download/v1.0/dualCam.ipa",
-      "size": 0,
+      "size": 1229631,
       "minOSVersion": "18.0"
     }
   ],
