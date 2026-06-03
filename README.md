@@ -19,7 +19,7 @@ At the heart of the app is **`AVCaptureMultiCamSession`**. Unlike standard singl
 Rather than simple layer overlays, dualCam processes video feeds frame-by-frame on the GPU using **Core Image**:
 * **Thread-Safe Synchronization**: Employs a custom locking queue to ingest frame buffers from both outputs concurrently.
 * **Layout Geometry Math**: Dynamically translates UIKit coordinate space coordinates (used for dragging and scaling the PiP frame) into Y-up Core Image pixel coordinates.
-* **Custom Compositing Filters**: Applies `CIImage` cropping, masking, and borders (using circular or rounded-rect paths) to shape the secondary feed, overlays the customized logo watermark badge (`noticedicon.png`), and merges them onto the primary background feed seamlessly.
+* **Custom Compositing Filters**: Applies `CIImage` cropping, masking, and borders (using circular or rounded-rect paths) to shape the secondary feed and merges it onto the primary background feed seamlessly.
 * **AVAssetWriter Pipeline**: Feeds the merged frames and the device's microphone audio track into a hardware-accelerated H.264/HEVC writer for instant, lightweight compilation.
 
 ### 3. State Management & Modern Frontend (SwiftUI)
@@ -29,11 +29,12 @@ Rather than simple layer overlays, dualCam processes video feeds frame-by-frame 
 ---
 
 ## Features
-*   **Dual Camera Support**: Capture Front + Back, Ultra-wide + Front, or Wide + Telephoto combinations simultaneously.
-*   **Customizable PiP Shapes**: Choose between circular or rounded-rectangle picture-in-picture frames.
-*   **Auto-Save Raw Feeds**: Optional automatic saving of individual source video tracks as separate raw feeds alongside the merged layout.
-*   **Logo Watermarking**: Custom graphic (`noticedicon.png`) badge overlay support.
-*   **Gestures & Interactions**: Tap-to-focus and pinch-to-zoom.
+*   **Dual Camera Support**: Capture Front + Back, Ultra-wide + Front, Wide + Telephoto, and more combinations simultaneously.
+*   **PiP & Spotlight Layouts**: Draggable, resizable picture-in-picture frame or a 65/35 split spotlight view.
+*   **Customizable PiP**: Circular or rounded-rectangle frame with multiple border styles and colours.
+*   **Flexible Export**: Save directly to Photos or pick any Files destination (iCloud Drive, local folders, third-party providers).
+*   **Auto-Save Raw Feeds**: Optional automatic saving of individual source video tracks alongside the merged output.
+*   **Gestures & Interactions**: Tap-to-focus, pinch-to-zoom, and pinch-to-resize the PiP window.
 
 ---
 

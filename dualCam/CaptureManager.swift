@@ -73,16 +73,15 @@ class CaptureManager: NSObject, ObservableObject {
     @Published var powerOptimizationMessage: String?
     @Published var isPerformanceReduced = false
     
-    private let systemMonitor = SystemMonitor.shared
-    private let backgroundManager = BackgroundManager.shared
+    private let systemMonitor: SystemMonitor = SystemMonitor.shared
+    private let backgroundManager: BackgroundManager = BackgroundManager.shared
+    private let logger = AppLogger.shared
     // These settings are read at capture/record time so they must always reflect the
     // current UserDefaults value — not a potentially-stale @Published copy.
     var layoutMode: LayoutMode {
         LayoutMode(rawValue: UserDefaults.standard.string(forKey: "layoutMode") ?? "") ?? .pip
     }
-    var aspectRatio: AspectRatio {
-        AspectRatio(rawValue: UserDefaults.standard.string(forKey: "aspectRatio") ?? "") ?? .r4_3
-    }
+    var aspectRatio: AspectRatio { .full }
     var pipFrameStyle: PipFrameStyle {
         PipFrameStyle(rawValue: UserDefaults.standard.string(forKey: "pipFrameStyle") ?? "") ?? .glass
     }
@@ -98,14 +97,12 @@ class CaptureManager: NSObject, ObservableObject {
     var autoSaveRawFeeds: Bool {
         UserDefaults.standard.bool(forKey: "autoSaveRawFeeds")
     }
-    var showWatermark: Bool {
-        get { UserDefaults.standard.object(forKey: "showWatermark") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "showWatermark") }
+    var saveDestination: SaveDestination {
+        SaveDestination(rawValue: UserDefaults.standard.string(forKey: "saveDestination") ?? "") ?? .photos
     }
     @Published var pipWidth: CGFloat            = 108
     @Published var displayWidth: CGFloat        = UIScreen.main.bounds.width
-    @Published var isLiveModeActive             = false
-    @Published private(set) var isLivePhotoAvailable = false
+    @Published var pendingExportURL: URL?       = nil
     @Published var flashMode: AVCaptureDevice.FlashMode = .auto {
         didSet { UserDefaults.standard.set(flashMode.rawValue, forKey: "flashMode") }
     }
@@ -164,14 +161,11 @@ class CaptureManager: NSObject, ObservableObject {
     private var photoCapturePair: CameraPair          = .frontAndBack
     private var photoCaptureLayout: LayoutMode        = .pip
     private var photoCapturePipWidth: CGFloat         = 108
-    private var photoCaptureAspectRatio: AspectRatio  = .r4_3
+    private var photoCaptureAspectRatio: AspectRatio  = .full
     private var photoCaptureFrameStyle: PipFrameStyle = .glass
     private var photoCaptureFrameColor: PipFrameColor = .white
     private var photoCapturePipShape: PipShape        = .roundedRect
     private var photoCaptureIsSwapped: Bool           = false
-    // Live photo support
-    nonisolated(unsafe) private var pendingLivePhotoURL: URL?
-    nonisolated(unsafe) private var livePhotoStillData: Data?
     // True while waiting for the user/timer to trigger secondary in delayed-dual mode
     private(set) var awaitingDelayedSecondary = false
 
@@ -223,7 +217,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
     
     private func handleThermalStateChange(_ thermalState: ProcessInfo.ThermalState) {
-        AppLogger.shared.log("CaptureManager: Thermal state changed to \(thermalState.description)")
+        logger.log("CaptureManager: Thermal state changed to \(thermalState.description)")
         
         switch thermalState {
         case .critical:
@@ -249,7 +243,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
     
     private func handlePowerStateChange(_ lowPowerMode: Bool) {
-        AppLogger.shared.log("CaptureManager: Low power mode \(lowPowerMode ? "enabled" : "disabled")")
+        logger.log("CaptureManager: Low power mode \(lowPowerMode ? "enabled" : "disabled")")
         
         // Compare raw values: nominal(0), fair(1), serious(2), critical(3)
         isPerformanceReduced = lowPowerMode || systemMonitor.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
@@ -275,7 +269,7 @@ class CaptureManager: NSObject, ObservableObject {
         // and reappears (backgrounding, fullScreenCover on some iOS versions). Re-running
         // configureSession on a live session would tear down all inputs mid-capture.
         guard !isSessionRunning, !isConfiguring else {
-            AppLogger.shared.log("checkPermissionsAndSetup: already running — skipping")
+            logger.log("checkPermissionsAndSetup: already running — skipping")
             return
         }
         isConfiguring = true
@@ -290,6 +284,39 @@ class CaptureManager: NSObject, ObservableObject {
         guard hasPermissions else { isConfiguring = false; return }
 
         detectBackCamera()
+        
+        // Log available multi-cam device sets for debugging
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .builtInWideAngleCamera,
+                .builtInUltraWideCamera,
+                .builtInTelephotoCamera,
+                .builtInDualCamera,
+                .builtInDualWideCamera,
+                .builtInTripleCamera
+            ],
+            mediaType: .video,
+            position: .unspecified
+        )
+        
+        logger.log("checkPermissionsAndSetup: Available multi-cam device sets:")
+        for (index, deviceSet) in discoverySession.supportedMultiCamDeviceSets.enumerated() {
+            let deviceNames = deviceSet.map { $0.deviceType.rawValue }.joined(separator: " + ")
+            logger.log("  Set \(index): \(deviceNames)")
+        }
+        
+        let supportedPairs = getSupportedCameraPairs()
+        logger.log("checkPermissionsAndSetup: Supported camera pairs: \(supportedPairs.map(\.rawValue))")
+        
+        // Ensure we start with a supported pair
+        if !supportedPairs.contains(currentPair) {
+            if let fallbackPair = supportedPairs.first {
+                logger.log("checkPermissionsAndSetup: Current pair \(currentPair.rawValue) not supported, switching to \(fallbackPair.rawValue)")
+                currentPair = fallbackPair
+                UserDefaults.standard.set(fallbackPair.rawValue, forKey: "cameraPair")
+            }
+        }
+        
         setupAudioSession()
         configureSession(pair: currentPair)
     }
@@ -335,16 +362,64 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     func switchPair(_ pair: CameraPair) {
-        currentPair = pair
+        // Check if the requested pair is actually supported
+        guard isCameraPairSupported(pair) else {
+            logger.log("switchPair: Requested pair \(pair.rawValue) not supported, finding alternative")
+            
+            // Fall back to the first supported pair
+            let supportedPairs = getSupportedCameraPairs()
+            guard let fallbackPair = supportedPairs.first else {
+                logger.log("switchPair: No supported camera pairs found!")
+                errorMessage = "No compatible camera pairs found on this device."
+                return
+            }
+            
+            logger.log("switchPair: Falling back to \(fallbackPair.rawValue)")
+            currentPair = fallbackPair
+            UserDefaults.standard.set(fallbackPair.rawValue, forKey: "cameraPair")
+            
+            isSwapped = false
+            zoom = 1.0
+            
+            if !isFlashAvailable {
+                flashMode = .off
+            }
+            
+            reconfigureSession(for: fallbackPair)
+            return
+        }
+        
+        // Add safety check for telephoto pairs in challenging conditions
+        if pair.requiresTelephoto && !canAccessTelephotoCamera() {
+            logger.log("switchPair: Telephoto pair requested but camera not accessible, falling back to frontAndBack")
+            currentPair = .frontAndBack
+            UserDefaults.standard.set(CameraPair.frontAndBack.rawValue, forKey: "cameraPair")
+        } else {
+            currentPair = pair
+            UserDefaults.standard.set(pair.rawValue, forKey: "cameraPair")
+        }
+        
         isSwapped = false
         zoom = 1.0
-        UserDefaults.standard.set(pair.rawValue, forKey: "cameraPair")
         
         // Reset flash mode if new cameras don't support flash
         if !isFlashAvailable {
             flashMode = .off
         }
         
+        reconfigureSession(for: currentPair)
+    }
+    
+    func canAccessTelephotoCamera() -> Bool {
+        // Check if telephoto camera is actually accessible (not just if device has one)
+        guard let _ = AVCaptureDevice.default(.builtInTelephotoCamera, for: .video, position: .back) else {
+            logger.log("canAccessTelephotoCamera: Telephoto camera not available")
+            return false
+        }
+        return true
+    }
+    
+    private func reconfigureSession(for pair: CameraPair) {
         Task {
             let captureSession = self.session
             await Task.detached(priority: .userInitiated) {
@@ -567,7 +642,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     func applyZoomPreset(_ preset: ZoomPreset) {
-        AppLogger.shared.log("Zoom preset: \(preset.label) (swap=\(preset.wantsSwapped), zoom=\(preset.zoom)×, pair=\(currentPair.rawValue))")
+        logger.log("Zoom preset: \(preset.label) (swap=\(preset.wantsSwapped), zoom=\(preset.zoom)×, pair=\(currentPair.rawValue))")
         // frontAndBack uses a virtual device — iOS handles lens switching via videoZoomFactor,
         // no camera swap needed. Other pairs use physical-device swaps to reach different lenses.
         if currentPair != .frontAndBack && preset.wantsSwapped != isSwapped {
@@ -609,7 +684,7 @@ class CaptureManager: NSObject, ObservableObject {
                 NotificationCenter.default.post(name: .dualCamVolumeShutter, object: nil)
             }
         }
-        AppLogger.shared.log("Volume button shutter: observation started")
+        logger.log("Volume button shutter: observation started")
     }
 
     func stopVolumeObservation() {
@@ -629,7 +704,22 @@ class CaptureManager: NSObject, ObservableObject {
         detectedBackCamera = types.compactMap {
             AVCaptureDevice.default($0, for: .video, position: .back)
         }.first
-        AppLogger.shared.log("Back camera detected: \(detectedBackCamera?.deviceType.rawValue ?? "none")")
+        logger.log("Back camera detected: \(detectedBackCamera?.deviceType.rawValue ?? "none")")
+    }
+    
+    // MARK: - Camera Pair Compatibility
+    
+    func getSupportedCameraPairs() -> [CameraPair] {
+        let allPairs: [CameraPair] = [.frontAndBack, .wideAndUltrawide, .ultraAndFront, .wideAndTelephoto, .telephotoAndFront, .ultrawideAndTelephoto]
+        return allPairs.filter { pair in
+            guard let devices = getCompatibleDevicesFor(pair: pair) else { return false }
+            return areDevicesCompatibleForMultiCam(devices.0, devices.1)
+        }
+    }
+    
+    func isCameraPairSupported(_ pair: CameraPair) -> Bool {
+        guard let devices = getCompatibleDevicesFor(pair: pair) else { return false }
+        return areDevicesCompatibleForMultiCam(devices.0, devices.1)
     }
 
     // MARK: - Session Configuration
@@ -682,33 +772,69 @@ class CaptureManager: NSObject, ObservableObject {
 
         guard let (primaryDevice, secondaryDevice) = devicesFor(pair: pair) else {
             session.commitConfiguration()
-            errorMessage = "Could not find cameras for this pair on this device."
+            
+            // Try to find a supported pair instead
+            let supportedPairs = getSupportedCameraPairs()
+            if let fallbackPair = supportedPairs.first, fallbackPair != pair {
+                logger.log("configureSession: Falling back to supported pair: \(fallbackPair.rawValue)")
+                currentPair = fallbackPair
+                UserDefaults.standard.set(fallbackPair.rawValue, forKey: "cameraPair")
+                configureSession(pair: fallbackPair)
+                return
+            }
+            
+            errorMessage = "Could not find compatible cameras for multi-cam recording on this device."
             isConfiguring = false
             return
         }
 
         configurationProgress = 0.5
-        configurationStatusMessage = "Connecting camera inputs..."
+        configurationStatusMessage = "Validating device compatibility..."
+        
+        // Double-check multi-cam compatibility before attempting to add inputs
+        guard areDevicesCompatibleForMultiCam(primaryDevice, secondaryDevice) else {
+            session.commitConfiguration()
+            logger.log("configureSession: Device combination not supported for multi-cam - \(primaryDevice.deviceType.rawValue) + \(secondaryDevice.deviceType.rawValue)")
+            
+            // Virtual back camera rejected — fall back to physical wide-angle camera
+            if pair == .frontAndBack,
+               let currentBack = detectedBackCamera,
+               currentBack.deviceType != .builtInWideAngleCamera,
+               let wideAngle = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
+                logger.log("configureSession: virtual device not multi-cam compatible — falling back to builtInWideAngleCamera")
+                detectedBackCamera = wideAngle
+                configureSession(pair: pair)
+                return
+            }
+            
+            // Try a different supported pair
+            let supportedPairs = getSupportedCameraPairs()
+            if let fallbackPair = supportedPairs.first, fallbackPair != pair {
+                logger.log("configureSession: Devices incompatible, trying fallback pair: \(fallbackPair.rawValue)")
+                currentPair = fallbackPair
+                UserDefaults.standard.set(fallbackPair.rawValue, forKey: "cameraPair")
+                configureSession(pair: fallbackPair)
+                return
+            }
+            
+            errorMessage = "These cameras cannot be used simultaneously on this device."
+            isConfiguring = false
+            return
+        }
+        
+        logger.log("configureSession: Using devices - Primary: \(primaryDevice.deviceType.rawValue), Secondary: \(secondaryDevice.deviceType.rawValue)")
 
         do {
+            configurationProgress = 0.55
+            configurationStatusMessage = "Connecting camera inputs..."
+            
             let primaryInput = try AVCaptureDeviceInput(device: primaryDevice)
             let secondaryInput = try AVCaptureDeviceInput(device: secondaryDevice)
 
             guard session.canAddInput(primaryInput), session.canAddInput(secondaryInput) else {
                 session.commitConfiguration()
-                // Virtual back camera rejected by this MultiCam configuration — fall back to
-                // the physical wide-angle camera and retry once. This handles devices where
-                // builtInTripleCamera / builtInDualWideCamera aren't MultiCam-compatible.
-                if pair == .frontAndBack,
-                   let currentBack = detectedBackCamera,
-                   currentBack.deviceType != .builtInWideAngleCamera,
-                   let wideAngle = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
-                    AppLogger.shared.log("configureSession: virtual device rejected — falling back to builtInWideAngleCamera")
-                    detectedBackCamera = wideAngle
-                    configureSession(pair: pair)
-                    return
-                }
-                errorMessage = "Cannot add camera inputs to session."
+                logger.log("configureSession: Session cannot add camera inputs - this should not happen after compatibility check")
+                errorMessage = "Failed to configure camera session. Please try again."
                 isConfiguring = false
                 return
             }
@@ -791,18 +917,6 @@ class CaptureManager: NSObject, ObservableObject {
             return
         }
 
-        configurationProgress = 0.95
-        configurationStatusMessage = "Configuring live photo capture..."
-
-        // Attempt to enable live photo capture. AVCaptureMultiCamSession may or may not
-        // allow it depending on the active configuration — check support first.
-        if primaryPhotoOutput.isLivePhotoCaptureSupported {
-            primaryPhotoOutput.isLivePhotoCaptureEnabled = true
-            print("Live Photo capture enabled successfully")
-        } else {
-            print("Live Photo capture not supported on this device/configuration")
-        }
-
         session.commitConfiguration()
 
         configurationProgress = 1.0
@@ -812,8 +926,6 @@ class CaptureManager: NSObject, ObservableObject {
         Task { @MainActor in
             self.primaryPreviewLayer = newPrimaryLayer
             self.secondaryPreviewLayer = newSecondaryLayer
-            self.isLivePhotoAvailable = self.primaryPhotoOutput.isLivePhotoCaptureEnabled
-            print("Updated preview layers — live photo: \(self.isLivePhotoAvailable)")
             // Apply front-camera mirror to the secondary layer if needed
             self.applyFrontCameraMirror()
         }
@@ -854,6 +966,31 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     private func devicesFor(pair: CameraPair) -> (AVCaptureDevice, AVCaptureDevice)? {
+        let devices = getCompatibleDevicesFor(pair: pair)
+        guard let primary = devices?.0, let secondary = devices?.1 else { return nil }
+        
+        // First, validate that these devices can actually be used together for multi-cam
+        guard areDevicesCompatibleForMultiCam(primary, secondary) else {
+            logger.log("devicesFor: Devices not compatible for multi-cam - \(primary.deviceType.rawValue) + \(secondary.deviceType.rawValue)")
+            
+            // For front+back pairs, try falling back to physical wide-angle if using virtual device
+            if pair == .frontAndBack,
+               let virtualDevice = detectedBackCamera,
+               virtualDevice.deviceType != .builtInWideAngleCamera,
+               let wideAngle = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+               let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
+               areDevicesCompatibleForMultiCam(wideAngle, front) {
+                logger.log("devicesFor: Falling back to physical wide-angle camera for multi-cam compatibility")
+                return (wideAngle, front)
+            }
+            
+            return nil
+        }
+        
+        return (primary, secondary)
+    }
+    
+    private func getCompatibleDevicesFor(pair: CameraPair) -> (AVCaptureDevice, AVCaptureDevice)? {
         switch pair {
         case .frontAndBack:
             guard let back = detectedBackCamera
@@ -893,11 +1030,46 @@ class CaptureManager: NSObject, ObservableObject {
             return (ultra, tele)
         }
     }
+    
+    private func areDevicesCompatibleForMultiCam(_ device1: AVCaptureDevice, _ device2: AVCaptureDevice) -> Bool {
+        // Get supported multi-cam device sets
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .builtInWideAngleCamera,
+                .builtInUltraWideCamera,
+                .builtInTelephotoCamera,
+                .builtInDualCamera,
+                .builtInDualWideCamera,
+                .builtInTripleCamera
+            ],
+            mediaType: .video,
+            position: .unspecified
+        )
+        
+        // Check if this combination is supported
+        for deviceSet in discoverySession.supportedMultiCamDeviceSets {
+            if deviceSet.contains(device1) && deviceSet.contains(device2) {
+                logger.log("areDevicesCompatibleForMultiCam: ✅ Compatible - \(device1.deviceType.rawValue) + \(device2.deviceType.rawValue)")
+                return true
+            }
+        }
+        
+        logger.log("areDevicesCompatibleForMultiCam: ❌ Device combination not supported - \(device1.deviceType.rawValue) + \(device2.deviceType.rawValue)")
+        
+        // Log all available device sets for debugging
+        logger.log("Available multi-cam device sets:")
+        for (index, deviceSet) in discoverySession.supportedMultiCamDeviceSets.enumerated() {
+            let deviceNames = deviceSet.map { $0.deviceType.rawValue }.joined(separator: " + ")
+            logger.log("  Set \(index): \(deviceNames)")
+        }
+        
+        return false
+    }
 
     // MARK: - Photo Capture
 
     func capturePhoto() {
-        AppLogger.shared.log("capturePhoto: pair=\(currentPair.rawValue) layout=\(layoutMode) flash=\(flashMode.displayName) live=\(isLiveModeActive)")
+        logger.log("capturePhoto: pair=\(currentPair.rawValue) layout=\(layoutMode) flash=\(flashMode.displayName)")
         photoCapturePair          = currentPair
         photoCaptureLayout        = layoutMode
         photoCapturePipWidth      = pipWidth
@@ -908,17 +1080,9 @@ class CaptureManager: NSObject, ObservableObject {
         photoCaptureIsSwapped     = isSwapped
         pendingPrimaryPhotoData   = nil
         pendingSecondaryPhotoData = nil
-        pendingLivePhotoURL       = nil
-        livePhotoStillData        = nil
 
         let settings = AVCapturePhotoSettings()
         settings.flashMode = flashMode
-        // Live photo — attach a movie URL when supported and the user has enabled it
-        if isLiveModeActive && primaryPhotoOutput.isLivePhotoCaptureEnabled {
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("live_\(UUID().uuidString).mov")
-            settings.livePhotoMovieFileURL = url
-        }
 
         let secondarySettings = AVCapturePhotoSettings()
         secondarySettings.flashMode = flashMode
@@ -929,7 +1093,7 @@ class CaptureManager: NSObject, ObservableObject {
 
     // Delayed dual capture: primary fires immediately, secondary fires after a countdown.
     func captureDelayedPrimary() {
-        AppLogger.shared.log("captureDelayedPrimary: firing primary now, awaiting secondary")
+        logger.log("captureDelayedPrimary: firing primary now, awaiting secondary")
         photoCapturePair          = currentPair
         photoCaptureLayout        = layoutMode
         photoCapturePipWidth      = pipWidth
@@ -937,8 +1101,8 @@ class CaptureManager: NSObject, ObservableObject {
         photoCaptureFrameStyle    = pipFrameStyle
         photoCaptureFrameColor    = pipFrameColor
         photoCapturePipShape      = pipShape
-        photoCaptureIsSwapped     = isSwapped
-        pendingPrimaryPhotoData   = nil
+        photoCaptureIsSwapped    = isSwapped
+        pendingPrimaryPhotoData  = nil
         pendingSecondaryPhotoData = nil
         awaitingDelayedSecondary = true
 
@@ -948,7 +1112,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     func captureDelayedSecondary() {
-        AppLogger.shared.log("captureDelayedSecondary: firing secondary after delay")
+        logger.log("captureDelayedSecondary: firing secondary after delay")
         guard awaitingDelayedSecondary else { return }
         awaitingDelayedSecondary = false
         let settings = AVCapturePhotoSettings()
@@ -960,10 +1124,10 @@ class CaptureManager: NSObject, ObservableObject {
               let secondaryData = pendingSecondaryPhotoData,
               let primaryImg = UIImage(data: primaryData),
               let secondaryImg = UIImage(data: secondaryData) else {
-            AppLogger.shared.log("finishPhotoCapture: missing data — aborting composite")
+            logger.log("finishPhotoCapture: missing data — aborting composite")
             return
         }
-        AppLogger.shared.log("finishPhotoCapture: compositing \(photoCaptureLayout) pair=\(photoCapturePair.rawValue) swapped=\(photoCaptureIsSwapped)")
+        logger.log("finishPhotoCapture: compositing \(photoCaptureLayout) pair=\(photoCapturePair.rawValue) swapped=\(photoCaptureIsSwapped)")
 
         pendingPrimaryPhotoData = nil
         pendingSecondaryPhotoData = nil
@@ -983,8 +1147,8 @@ class CaptureManager: NSObject, ObservableObject {
         let rawComposite = makeComposite(main: mainImg, pip: pipImg,
                                          layout: photoCaptureLayout,
                                          pipWidthFraction: photoCapturePipWidth / max(displayWidth, 1))
-        // Aspect ratio crop only applies to PiP — split/spotlight have their own inherent canvas
-        // shape (square / 4:5) and additional cropping would chop off part of each panel.
+        // Aspect ratio crop only applies to PiP — Spotlight has its own inherent 4:5 canvas
+        // and additional cropping would chop off part of each panel.
         let composite = photoCaptureLayout == .pip
             ? cropToAspectRatio(rawComposite, ratio: photoCaptureAspectRatio.ratio)
             : rawComposite
@@ -994,30 +1158,24 @@ class CaptureManager: NSObject, ObservableObject {
         item.thumbnail = composite
         capturedItems.insert(item, at: 0)
 
-        // Snapshot live photo state before any async work
-        let liveURL  = pendingLivePhotoURL
-        let liveStill = livePhotoStillData
-        pendingLivePhotoURL = nil
-        livePhotoStillData  = nil
-
         Task {
-            do {
-                try await PHPhotoLibrary.shared().performChanges {
-                    PHAssetChangeRequest.creationRequestForAsset(from: composite)
+            if saveDestination == .files {
+                let name = "dualcam_\(Int(Date().timeIntervalSince1970)).jpg"
+                let url  = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                if let data = composite.jpegData(compressionQuality: 0.95) {
+                    try? data.write(to: url)
+                    pendingExportURL = url
                 }
-                if let movieURL = liveURL, let stillData = liveStill {
+            } else {
+                do {
                     try await PHPhotoLibrary.shared().performChanges {
-                        let req = PHAssetCreationRequest.forAsset()
-                        req.addResource(with: .photo, data: stillData, options: nil)
-                        let opts = PHAssetResourceCreationOptions()
-                        opts.shouldMoveFile = true
-                        req.addResource(with: .pairedVideo, fileURL: movieURL, options: opts)
+                        PHAssetChangeRequest.creationRequestForAsset(from: composite)
                     }
+                    await flashSavedBanner()
+                    sendSavedNotification(title: "Photo Saved", body: "Your dual-camera photo was saved to the camera roll.")
+                } catch {
+                    print("Failed to save photo to photo library: \(error)")
                 }
-                await flashSavedBanner()
-                sendSavedNotification(title: "Photo Saved", body: "Your dual-camera photo was saved to the camera roll.")
-            } catch {
-                print("Failed to save photo to photo library: \(error)")
             }
         }
     }
@@ -1102,14 +1260,8 @@ class CaptureManager: NSObject, ObservableObject {
     private func makeComposite(main: UIImage, pip: UIImage,
                                layout: LayoutMode, pipWidthFraction: CGFloat) -> UIImage {
         switch layout {
-        case .pip:
-            return makeCompositePiP(main: main, pip: pip, widthFraction: pipWidthFraction)
-        case .splitH:
-            return makeCompositeSplit(main: main, pip: pip, horizontal: true)
-        case .splitV:
-            return makeCompositeSplit(main: main, pip: pip, horizontal: false)
-        case .spotH:
-            return makeCompositeSpotlight(main: main, pip: pip)
+        case .pip:   return makeCompositePiP(main: main, pip: pip, widthFraction: pipWidthFraction)
+        case .spotH: return makeCompositeSpotlight(main: main, pip: pip)
         }
     }
 
@@ -1148,9 +1300,8 @@ class CaptureManager: NSObject, ObservableObject {
             // Main fills canvas
             drawFill(main, in: CGRect(origin: .zero, size: main.size), context: ctx)
 
-            let fraction = widthFraction.clamped(to: 0.18...0.40)
             let pipNatural = pip.size  // already orientation-corrected by UIKit
-            let pipW   = main.size.width * fraction
+            let pipW   = main.size.width * widthFraction
             let rawPipH = pipW * (pipNatural.height / max(pipNatural.width, 1))
             // Circle requires a square rect so ovalIn: produces a true circle, not an ellipse
             let pipH   = photoCapturePipShape == .circle ? pipW : rawPipH
@@ -1180,30 +1331,6 @@ class CaptureManager: NSObject, ObservableObject {
         }
     }
 
-    private func makeCompositeSplit(main: UIImage, pip: UIImage, horizontal: Bool) -> UIImage {
-        let W = main.size.width
-        // Use a square canvas — each slot is W × (W-gap)/2 (landscape) for splitH,
-        // or (W-gap)/2 × W (portrait strip) for splitV. Square is a clean social format.
-        let gap: CGFloat = max(4, W * 0.004)
-        let canvasSize = CGSize(width: W, height: W)
-        let renderer = UIGraphicsImageRenderer(size: canvasSize)
-        return renderer.image { ctx in
-            // Black background for any gaps
-            UIColor.black.setFill()
-            UIRectFill(CGRect(origin: .zero, size: canvasSize))
-
-            if horizontal {
-                let half = (W - gap) / 2
-                drawFill(main, in: CGRect(x: 0, y: 0,          width: W, height: half), context: ctx)
-                drawFill(pip,  in: CGRect(x: 0, y: half + gap, width: W, height: half), context: ctx)
-            } else {
-                let half = (W - gap) / 2
-                drawFill(main, in: CGRect(x: 0,          y: 0, width: half, height: W), context: ctx)
-                drawFill(pip,  in: CGRect(x: half + gap, y: 0, width: half, height: W), context: ctx)
-            }
-        }
-    }
-
     private func makeCompositeSpotlight(main: UIImage, pip: UIImage) -> UIImage {
         let W = main.size.width
         // 4:5 portrait canvas — Instagram-friendly, shows main prominently
@@ -1228,7 +1355,7 @@ class CaptureManager: NSObject, ObservableObject {
 
         let recorder = _recorder
         let codec = recordingCodec
-        AppLogger.shared.log("prepareForRecording: HFR=\(highFrameRate) codec=\(codec.rawValue)")
+        logger.log("prepareForRecording: HFR=\(highFrameRate) codec=\(codec.rawValue)")
         Task.detached(priority: .userInitiated) { [weak self] in
             recorder.prepare(highFrameRate: highFrameRate, codec: codec)
             await MainActor.run {
@@ -1247,10 +1374,10 @@ class CaptureManager: NSObject, ObservableObject {
     func startRecording(highFrameRate: Bool) {
         guard !_recorder.isRecording else { return }
         guard _recorder.startRecording() != nil else {
-            AppLogger.shared.log("startRecording: recorder not ready — ignoring")
+            logger.log("startRecording: recorder not ready — ignoring")
             return
         }
-        AppLogger.shared.log("startRecording: started (HFR=\(highFrameRate), limit=\(CaptureManager.maxRecordingSeconds)s, pair=\(currentPair.rawValue))")
+        logger.log("startRecording: started (HFR=\(highFrameRate), limit=\(CaptureManager.maxRecordingSeconds)s, pair=\(currentPair.rawValue))")
         isRecording = true
         videoCaptureAspectRatio = aspectRatio
         videoCaptureHighFrameRate = highFrameRate
@@ -1267,7 +1394,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     func stopRecording() {
-        AppLogger.shared.log("stopRecording: elapsed=\(recordingSecondsElapsed)s pair=\(currentPair.rawValue) layout=\(layoutMode)")
+        logger.log("stopRecording: elapsed=\(recordingSecondsElapsed)s pair=\(currentPair.rawValue) layout=\(layoutMode)")
         recordingTimer?.invalidate()
         recordingTimer = nil
         isRecording = false          // clear immediately so UI stops showing the recording state
@@ -1275,7 +1402,7 @@ class CaptureManager: NSObject, ObservableObject {
         let swapped    = isSwapped
         let pair       = currentPair
         let layout     = layoutMode
-        let pipFrac    = (pipWidth / max(displayWidth, 1)).clamped(to: 0.18...0.40)
+        let pipFrac    = pipWidth / max(displayWidth, 1)
         let pipPos     = pipPosition
         let frmStyle   = pipFrameStyle
         let frmColor   = pipFrameColor
@@ -1287,7 +1414,7 @@ class CaptureManager: NSObject, ObservableObject {
         
         Task {
             guard let urls = await _recorder.stopRecording() else { 
-                AppLogger.shared.log("stopRecording: VideoRecorder.stopRecording() returned nil - processing aborted")
+                logger.log("stopRecording: VideoRecorder.stopRecording() returned nil - processing aborted")
                 await MainActor.run {
                     self.errorMessage = "Failed to stop recording properly. Please try recording again."
                     self.isVideoRecorderReady = false
@@ -1295,7 +1422,7 @@ class CaptureManager: NSObject, ObservableObject {
                 }
                 return 
             }
-            AppLogger.shared.log("stopRecording: VideoRecorder returned URLs successfully - starting processing")
+            logger.log("stopRecording: VideoRecorder returned URLs successfully - starting processing")
             isVideoRecorderReady = false
             recordingSecondsElapsed = 0
             
@@ -1428,6 +1555,25 @@ class CaptureManager: NSObject, ObservableObject {
                     }
                     
                     Task {
+                        if self.saveDestination == .files {
+                            await MainActor.run { [weak self] in
+                                guard let self else { return }
+                                self.processingProgress = 1.0
+                                self.processingStatusMessage = "Ready to export"
+                                Task { @MainActor in
+                                    try? await Task.sleep(for: .milliseconds(300))
+                                    self.pendingExportURL = merged
+                                    self.isProcessingVideo = false
+                                    self.processingProgress = 0.0
+                                    self.processingStatusMessage = ""
+                                    self.currentProcessingTask = nil
+                                    self.recentVideoItem = item
+                                    if inBackground { self.endBackgroundTask() }
+                                    self.processNextVideoInQueue()
+                                }
+                            }
+                            return
+                        }
                         do {
                             try await PHPhotoLibrary.shared().performChanges {
                                 PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: merged)
@@ -1539,7 +1685,7 @@ class CaptureManager: NSObject, ObservableObject {
         endBackgroundTask()
     }
 
-    private func flashSavedBanner() {
+    func flashSavedBanner() {
         savedBannerVersion += 1
         let v = savedBannerVersion
         showSavedBanner = true
@@ -1576,11 +1722,11 @@ extension CaptureManager: AVCapturePhotoCaptureDelegate {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
                                   didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let error {
-            AppLogger.shared.log("photoOutput error: \(error.localizedDescription)")
+            logger.log("photoOutput error: \(error.localizedDescription)")
             return
         }
         guard let data = photo.fileDataRepresentation() else {
-            AppLogger.shared.log("photoOutput: no file data representation")
+            logger.log("photoOutput: no file data representation")
             return
         }
         let exifFlash = (photo.metadata["{Exif}"] as? [String: Any])?["Flash"] as? Int ?? 0
@@ -1588,7 +1734,7 @@ extension CaptureManager: AVCapturePhotoCaptureDelegate {
 
         Task { @MainActor in
             if actuallyFired {
-                AppLogger.shared.log("photoOutput: flash fired")
+                logger.log("photoOutput: flash fired")
                 flashFired = true
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(120))
@@ -1596,30 +1742,19 @@ extension CaptureManager: AVCapturePhotoCaptureDelegate {
                 }
             }
             if output === primaryPhotoOutput {
-                AppLogger.shared.log("photoOutput: primary received (\(data.count / 1024)KB)")
+                logger.log("photoOutput: primary received (\(data.count / 1024)KB)")
                 pendingPrimaryPhotoData = data
-                livePhotoStillData = data
             } else {
-                AppLogger.shared.log("photoOutput: secondary received (\(data.count / 1024)KB)")
+                logger.log("photoOutput: secondary received (\(data.count / 1024)KB)")
                 pendingSecondaryPhotoData = data
             }
             if pendingPrimaryPhotoData != nil && pendingSecondaryPhotoData != nil {
-                AppLogger.shared.log("photoOutput: both received — compositing")
+                logger.log("photoOutput: both received — compositing")
                 finishPhotoCapture()
             }
         }
     }
 
-    // Called when the paired live-photo movie is ready on disk
-    nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
-                                  didFinishProcessingLivePhotoToMovieFileAt url: URL,
-                                  duration: CMTime, photoDisplayTime: CMTime,
-                                  resolvedSettings: AVCaptureResolvedPhotoSettings,
-                                  error: Error?) {
-        guard error == nil else { return }
-        pendingLivePhotoURL = url
-    }
-    
     // MARK: - Video Processing Controls
 
     func cancelProcessing() {

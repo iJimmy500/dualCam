@@ -7,46 +7,30 @@ enum MediaType {
 }
 
 enum AspectRatio: String, CaseIterable, Identifiable {
-    case r4_3  = "4:3"
-    case r16_9 = "16:9"
-    case r1_1  = "1:1"
-    case full  = "Full"
+    case full = "Full"
 
     var id: String { rawValue }
 
-    var ratio: CGFloat? {
-        switch self {
-        case .r4_3:  return 4.0 / 3.0
-        case .r16_9: return 16.0 / 9.0
-        case .r1_1:  return 1.0
-        case .full:  return nil
-        }
-    }
+    var ratio: CGFloat? { nil }
 }
 
 enum LayoutMode: String, CaseIterable, Identifiable {
-    case pip        = "Picture in Picture"
-    case splitH     = "Top / Bottom"
-    case splitV     = "Side by Side"
-    case spotH      = "Spotlight"     // 65% main top, 35% secondary bottom
+    case pip   = "Picture in Picture"
+    case spotH = "Spotlight"
 
     var id: String { rawValue }
 
     var systemImage: String {
         switch self {
-        case .pip:     return "pip"
-        case .splitH:  return "rectangle.split.1x2"
-        case .splitV:  return "rectangle.split.2x1"
-        case .spotH:   return "rectangle.topthird.inset.filled"
+        case .pip:   return "pip"
+        case .spotH: return "rectangle.topthird.inset.filled"
         }
     }
 
     var shortLabel: String {
         switch self {
-        case .pip:    return "PiP"
-        case .splitH: return "Split H"
-        case .splitV: return "Split V"
-        case .spotH:  return "Spotlight"
+        case .pip:   return "PiP"
+        case .spotH: return "Spotlight"
         }
     }
 }

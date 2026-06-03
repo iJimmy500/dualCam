@@ -6,8 +6,6 @@ struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
 
-    private let isPro = AppSettings.hasTelephoto
-
     @State private var showingHighQualityWarning = false
     @State private var showingLogs = false
     @State private var showingWelcome = false
@@ -20,7 +18,6 @@ struct SettingsView: View {
                 captureSection
                 generalSection
                 experimentalSection
-                proSection
                 developerSection
                 aboutSection
             }
@@ -80,7 +77,12 @@ struct SettingsView: View {
     }
 
     private var availablePairs: [CameraPair] {
-        CameraPair.allCases.filter { !$0.requiresTelephoto || isPro }
+        return CameraPair.allCases.filter { pair in
+            if pair.requiresTelephoto && !capture.canAccessTelephotoCamera() {
+                return false
+            }
+            return true
+        }
     }
 
     private func pairDescription(_ pair: CameraPair) -> String {
@@ -284,22 +286,11 @@ struct SettingsView: View {
             settingsRow("Preview After Capture", icon: "photo.circle", note: "Review & share immediately") {
                 Toggle("", isOn: $settings.showCapturePreview).labelsHidden()
             }
-            settingsRow("Live Mode", icon: "livephoto",
-                        note: capture.isLivePhotoAvailable
-                              ? "Saves motion clip + dual composite"
-                              : "Not supported on this camera pair") {
-                Toggle("", isOn: $settings.liveMode)
-                    .labelsHidden()
-                    .disabled(!capture.isLivePhotoAvailable)
-            }
             settingsRow("Capture Sound", icon: "speaker.wave.1", note: "Plays shutter sound") {
                 Toggle("", isOn: $settings.soundOnCapture).labelsHidden()
             }
             settingsRow("Auto-Save Raw Feeds", icon: "square.and.arrow.down.on.square", note: "Saves both unedited camera feeds alongside the composite") {
                 Toggle("", isOn: $settings.autoSaveRawFeeds).labelsHidden()
-            }
-            settingsRow("Branding Watermark", icon: "tag", note: "Adds logo watermark in corner") {
-                Toggle("", isOn: $settings.showWatermark).labelsHidden()
             }
         }
     }
@@ -335,17 +326,35 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            HStack {
-                Label {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Saves to Photos")
-                        Text("Always on").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Save Destination").font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    ForEach(SaveDestination.allCases) { dest in
+                        let selected = settings.saveDestination == dest
+                        Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            settings.saveDestination = dest
+                        } label: {
+                            VStack(spacing: 5) {
+                                Image(systemName: dest.icon)
+                                    .font(.system(size: 18, weight: .medium))
+                                    .foregroundStyle(selected ? .blue : .secondary)
+                                Text(dest.rawValue)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(selected ? .primary : .secondary)
+                            }
+                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(selected ? Color.blue.opacity(0.15) : Color.white.opacity(0.06)))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(selected ? Color.blue.opacity(0.5) : Color.clear, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
                     }
-                } icon: {
-                    Image(systemName: "photo.on.rectangle")
                 }
-                Spacer()
-                Text("Always").foregroundStyle(.secondary).font(.subheadline)
+                Text(settings.saveDestination.note)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.bottom, 2)
             }
         }
     }
@@ -376,49 +385,6 @@ struct SettingsView: View {
             HStack(spacing: 6) {
                 Text("Experimental")
                 betaBadge
-            }
-        }
-    }
-
-    // MARK: - Pro
-
-    @ViewBuilder
-    private var proSection: some View {
-        Section {
-            if isPro {
-                settingsRow("High Frame Rate Video", icon: "film.stack", note: "60 fps recording") {
-                    Toggle("", isOn: $settings.highFrameRate).labelsHidden()
-                }
-                HStack {
-                    Label {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Telephoto Pairs")
-                            Text("Wide+Tele, Tele+Front, Ultra+Tele").font(.caption).foregroundStyle(.secondary)
-                        }
-                    } icon: { Image(systemName: "camera.filters") }
-                    Spacer()
-                    Text("Available").foregroundStyle(.green).font(.subheadline)
-                }
-            } else {
-                HStack(spacing: 12) {
-                    Image(systemName: "lock.fill").font(.system(size: 18)).foregroundStyle(.secondary).frame(width: 24)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Pro features unavailable").font(.subheadline)
-                        Text("Requires a telephoto camera (Pro Level iPhone).")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        } header: {
-            HStack(spacing: 6) {
-                Text("Pro Features")
-                if isPro {
-                    Text("UNLOCKED")
-                        .font(.system(size: 9, weight: .bold)).foregroundStyle(.green)
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(.green.opacity(0.15), in: Capsule())
-                }
             }
         }
     }

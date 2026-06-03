@@ -1,6 +1,27 @@
-import AVFoundation
+import Foundation
 import Combine
 import SwiftUI
+import AVFoundation
+
+// MARK: - Settings
+
+enum SaveDestination: String, CaseIterable, Identifiable {
+    case photos = "Photos"
+    case files  = "Files"
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .photos: return "photo.on.rectangle"
+        case .files:  return "folder"
+        }
+    }
+    var note: String {
+        switch self {
+        case .photos: return "Saves directly to your Photos library"
+        case .files:  return "Pick a folder each time you save"
+        }
+    }
+}
 
 enum VideoQuality: String, CaseIterable, Identifiable {
     case high = "Highest (4K if available)"
@@ -47,7 +68,7 @@ final class AppSettings: ObservableObject {
     @AppStorage("hapticFeedback")    var hapticFeedback    = true
     @AppStorage("showGridOverlay")   var showGridOverlay   = false
     @AppStorage("layoutMode")        var layoutModeRaw     = LayoutMode.pip.rawValue
-    @AppStorage("aspectRatio")       var aspectRatioRaw    = AspectRatio.r4_3.rawValue
+    @AppStorage("aspectRatio")       var aspectRatioRaw    = AspectRatio.full.rawValue
     @AppStorage("captureTimer")      var captureTimer      = 0         // 0, 3, 10 seconds
     @AppStorage("pipFrameStyle")     var pipFrameStyleRaw  = PipFrameStyle.glass.rawValue
     @AppStorage("pipFrameColor")     var pipFrameColorRaw  = PipFrameColor.white.rawValue
@@ -55,10 +76,15 @@ final class AppSettings: ObservableObject {
     @AppStorage("videoQuality")      var videoQualityRaw   = VideoQuality.medium.rawValue
 
     // After capture
-    @AppStorage("showCapturePreview") var showCapturePreview = true
-    @AppStorage("soundOnCapture")     var soundOnCapture     = false
-    @AppStorage("showWatermark")      var showWatermark      = true
-    @AppStorage("autoSaveRawFeeds")   var autoSaveRawFeeds   = false
+    @AppStorage("showCapturePreview")  var showCapturePreview  = true
+    @AppStorage("soundOnCapture")      var soundOnCapture      = false
+    @AppStorage("autoSaveRawFeeds")    var autoSaveRawFeeds    = false
+    @AppStorage("saveDestination")     var saveDestinationRaw  = SaveDestination.photos.rawValue
+
+    var saveDestination: SaveDestination {
+        get { SaveDestination(rawValue: saveDestinationRaw) ?? .photos }
+        set { saveDestinationRaw = newValue.rawValue }
+    }
 
     // General QoL
     @AppStorage("screenAlwaysOn")    var screenAlwaysOn    = true
@@ -70,7 +96,6 @@ final class AppSettings: ObservableObject {
     @AppStorage("showDebugInfo")      var showDebugInfo      = false
     @AppStorage("mirrorFrontCamera")  var mirrorFrontCamera  = true
     @AppStorage("delayedDualCapture") var delayedDualCapture = false
-    @AppStorage("liveMode")           var liveMode           = false
     @AppStorage("volumeShutter")      var volumeShutter      = false
     @AppStorage("macroMode")          var macroMode          = false
 
@@ -81,8 +106,6 @@ final class AppSettings: ObservableObject {
     // Onboarding
     @AppStorage("hasSeenWelcome")     var hasSeenWelcome     = false
 
-    // Pro
-    @AppStorage("highFrameRate")      var highFrameRate      = false
     @AppStorage("recordingCodec")     var recordingCodecRaw  = RecordingCodec.hevcSafe.rawValue
 
     // Computed wrappers
@@ -91,7 +114,7 @@ final class AppSettings: ObservableObject {
         set { layoutModeRaw = newValue.rawValue }
     }
     var aspectRatio: AspectRatio {
-        get { AspectRatio(rawValue: aspectRatioRaw) ?? .r4_3 }
+        get { .full }
         set { aspectRatioRaw = newValue.rawValue }
     }
     var pipFrameStyle: PipFrameStyle {
@@ -117,9 +140,34 @@ final class AppSettings: ObservableObject {
 
     static var hasTelephoto: Bool {
         #if os(iOS)
-        return AVCaptureDevice.default(.builtInTelephotoCamera, for: .video, position: .back) != nil
+        // Check if device model supports telephoto first (more reliable than camera availability)
+        let deviceModel = UIDevice.current.modelName
+        let supportsTelephoto = deviceModel.contains("Pro") || deviceModel.contains("Plus")
+        
+        // If device model supports it, also check camera availability as secondary confirmation
+        if supportsTelephoto {
+            // In Low Power Mode or certain states, camera might not be available
+            // but device still has the hardware
+            let cameraAvailable = AVCaptureDevice.default(.builtInTelephotoCamera, for: .video, position: .back) != nil
+            return true  // Return true if device model supports it, regardless of momentary availability
+        }
+        
+        return false
         #else
         return false
         #endif
+    }
+}
+
+extension UIDevice {
+    var modelName: String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                ptr in String.init(validatingUTF8: ptr)
+            }
+        }
+        return machine ?? "Unknown"
     }
 }

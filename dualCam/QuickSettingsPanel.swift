@@ -13,16 +13,6 @@ struct QuickSettingsPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            quickRow(icon: "aspectratio", title: "Ratio") {
-                ForEach(AspectRatio.allCases) { ar in
-                    chip(ar.rawValue, selected: settings.aspectRatio == ar) {
-                        settings.aspectRatio = ar
-                    }
-                }
-            }
-
-            divider
-
             quickRow(icon: "bolt", title: "Flash") {
                 chip("Off",  selected: capture.flashMode == .off)  { capture.setFlashMode(.off) }
                 chip("Auto", selected: capture.flashMode == .auto) { capture.setFlashMode(.auto) }

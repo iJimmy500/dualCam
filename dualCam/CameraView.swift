@@ -113,6 +113,17 @@ struct CameraView: View {
         .fullScreenCover(item: $previewItem) { item in
             CapturePreviewModal(item: item) { previewItem = nil }
         }
+        .sheet(isPresented: Binding(
+            get: { capture.pendingExportURL != nil },
+            set: { if !$0 { capture.pendingExportURL = nil } }
+        )) {
+            if let url = capture.pendingExportURL {
+                DocumentExportSheet(url: url) {
+                    capture.pendingExportURL = nil
+                    capture.flashSavedBanner()
+                }
+            }
+        }
     }
 
     // MARK: - Main content
@@ -199,10 +210,6 @@ struct CameraView: View {
         ZStack {
             mainPreview.ignoresSafeArea()
 
-            aspectRatioBars(in: geo)
-                .transition(.opacity)
-                .animation(.easeInOut(duration: 0.2), value: settings.aspectRatioRaw)
-
             if settings.showGridOverlay {
                 gridOverlay.transition(.opacity)
             }
@@ -222,29 +229,19 @@ struct CameraView: View {
         }
     }
 
-    // Cameras sandwiched between opaque top/bottom bars — used for all split/spotlight layouts.
+    // Cameras sandwiched between opaque top/bottom bars — used for spotlight layout.
     // The cameras occupy exactly the space between the bars so nothing is hidden behind chrome.
     @ViewBuilder
     private func splitLayoutContent(geo: GeometryProxy) -> some View {
         VStack(spacing: 0) {
-            // Top chrome with solid black background over the notch/Dynamic Island area
             topBar
                 .padding(.top, geo.safeAreaInsets.top)
                 .frame(maxWidth: .infinity)
                 .background(Color.black)
 
-            // Camera panels fill the remaining space between the two chrome bars
-            Group {
-                switch activeLayout {
-                case .splitH: splitHView()
-                case .splitV: splitVView()
-                case .spotH:  spotlightView()
-                default:      EmptyView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            spotlightView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Bottom chrome with solid background so it clearly separates from cameras
             bottomBar(geo: geo)
                 .frame(maxWidth: .infinity)
                 .background(Color.black.opacity(0.92).ignoresSafeArea(edges: .bottom))
@@ -282,42 +279,8 @@ struct CameraView: View {
             )
     }
 
-    // MARK: - Split layout views
-    // These live inside splitLayoutContent's VStack — no ignoresSafeArea needed,
-    // and no geo parameter since the parent VStack owns sizing.
+    // MARK: - Spotlight layout view
 
-    private func splitHView() -> some View {
-        VStack(spacing: 2) {
-            PreviewPlaceholder(layer: mainLayer)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .onTapGesture(count: 2) {
-                    haptic()
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
-                }
-            PreviewPlaceholder(layer: pipLayer)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-        }
-    }
-
-    private func splitVView() -> some View {
-        HStack(spacing: 2) {
-            PreviewPlaceholder(layer: mainLayer)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .onTapGesture(count: 2) {
-                    haptic()
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
-                }
-            PreviewPlaceholder(layer: pipLayer)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-        }
-    }
-
-    // Uses an internal GeometryReader so the 65/35 proportion is relative to the
-    // AVAILABLE height (between chrome bars), not the full screen height.
     private func spotlightView() -> some View {
         GeometryReader { inner in
             VStack(spacing: 2) {
@@ -419,7 +382,7 @@ struct CameraView: View {
                         capture.setZoom(1.0)
                         lastZoomFactor = 1.0
                         zoomGestureMagnification = 1.0
-                        capture.prepareForRecording(highFrameRate: settings.highFrameRate)
+                        capture.prepareForRecording(highFrameRate: false)
                         // Update storage info when switching to video mode
                         storageManager.updateStorageInfo()
                     } else {
@@ -537,12 +500,11 @@ struct CameraView: View {
             Text("Mode: \(captureMode.rawValue)")
             Text("Timer: \(settings.captureTimer == 0 ? "Off" : "\(settings.captureTimer)s")")
             Text("Delayed dual: \(settings.delayedDualCapture ? "On" : "Off")")
-            Text("Live: \(settings.liveMode && capture.isLivePhotoAvailable ? "On" : "Off")")
             Text("Countdown: \(countdown.map { "\($0)" } ?? "—")")
             Text("── Video ──").foregroundStyle(.green.opacity(0.5))
             Text("Recording: \(capture.isRecording ? "Yes \(capture.recordingSecondsElapsed)s" : "No")")
             Text("Rec limit: \(CaptureManager.maxRecordingSeconds)s")
-            Text("HFR: \(settings.highFrameRate ? "60fps" : "30fps")")
+            Text("HFR: 30fps")
             Text("Codec: \(settings.recordingCodecRaw)")
             Text("Quality: \(settings.videoQualityRaw)")
             Text("Recorder ready: \(capture.isVideoRecorderReady ? "Yes" : "No")")
@@ -609,36 +571,6 @@ struct CameraView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.bottom, 130)
-            }
-        }
-    }
-
-    // MARK: - Aspect ratio bars
-
-    @ViewBuilder
-    private func aspectRatioBars(in geo: GeometryProxy) -> some View {
-        if let ratio = settings.aspectRatio.ratio {
-            let w = geo.size.width, h = geo.size.height
-            let targetH = w / ratio
-            if targetH < h {
-                let barH = (h - targetH) / 2
-                VStack(spacing: 0) {
-                    Color.black.opacity(0.55).frame(height: barH)
-                    Spacer()
-                    Color.black.opacity(0.55).frame(height: barH)
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            } else {
-                let targetW = h * ratio
-                let barW = (w - targetW) / 2
-                HStack(spacing: 0) {
-                    Color.black.opacity(0.55).frame(width: barW)
-                    Spacer()
-                    Color.black.opacity(0.55).frame(width: barW)
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
             }
         }
     }
@@ -762,17 +694,6 @@ struct CameraView: View {
                 .stroke(.white.opacity(0.9), lineWidth: 2.5)
                 .frame(width: 76, height: 76)
 
-            // Live mode badge
-            if captureMode == .photo && settings.liveMode && capture.isLivePhotoAvailable {
-                Text("LIVE")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(.yellow.opacity(0.9), in: Capsule())
-                    .offset(y: -44)
-            }
-
             if captureMode == .photo {
                 // Photo: white fill
                 Circle()
@@ -843,7 +764,7 @@ struct CameraView: View {
                 AppLogger.shared.log("Shutter: stop recording at \(capture.recordingSecondsElapsed)s")
                 capture.stopRecording()
             } else {
-                AppLogger.shared.log("Shutter: start recording (HFR=\(settings.highFrameRate), limit=\(CaptureManager.maxRecordingSeconds)s)")
+                AppLogger.shared.log("Shutter: start recording (limit=\(CaptureManager.maxRecordingSeconds)s)")
                 checkStorageAndStartRecording()
             }
         }
@@ -918,15 +839,15 @@ struct CameraView: View {
             settings.recordingCodec = optimized.codec
             settings.videoQuality = optimized.quality
             
-            capture.startRecording(highFrameRate: false) // Disable high frame rate when performance reduced
-            
+            capture.startRecording(highFrameRate: false)
+
             // Restore original settings after a delay (or when recording stops)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 settings.recordingCodec = originalCodec
                 settings.videoQuality = originalQuality
             }
         } else {
-            capture.startRecording(highFrameRate: settings.highFrameRate)
+            capture.startRecording(highFrameRate: false)
         }
     }
 
@@ -1179,7 +1100,7 @@ private struct CaptureSettingsSyncModifier: ViewModifier {
     // @ObservedObject ensures the modifier body re-evaluates when settings change,
     // which is required for onChange(of:) handlers to fire. A plain `let` constant
     // (reference type) doesn't establish a SwiftUI dependency, so handlers silently
-    // skip — that was the root cause of stale layout / codec / liveMode composites.
+    // skip — that was the root cause of stale layout / codec composites.
     @ObservedObject var settings: AppSettings
     let pipWidth: CGFloat
     @Binding var previewItem: MediaItem?
@@ -1190,7 +1111,6 @@ private struct CaptureSettingsSyncModifier: ViewModifier {
             // Settings backed by UserDefaults computed properties (layoutMode, aspectRatio,
             // pipShape, etc.) are always read fresh at capture time, so no onChange needed.
             // Only settings that drive live CaptureManager state still need syncing:
-            .onChange(of: settings.liveMode)          { _, v in capture.isLiveModeActive = v }
             .onChange(of: settings.recordingCodecRaw) { _, _ in capture.recordingCodec = settings.recordingCodec }
             .onChange(of: settings.mirrorFrontCamera) { _, _  in capture.applyFrontCameraMirror() }
             .onChange(of: settings.screenAlwaysOn)    { _, v  in UIApplication.shared.isIdleTimerDisabled = v }
@@ -1211,9 +1131,8 @@ private struct CaptureSettingsSyncModifier: ViewModifier {
     private func syncAll() {
         // layoutMode, aspectRatio, pipShape, pipFrameStyle, pipFrameColor, videoQuality,
         // autoSaveRawFeeds are now UserDefaults-computed — no sync needed.
-        capture.pipWidth         = pipWidth
-        capture.isLiveModeActive = settings.liveMode
-        capture.recordingCodec   = settings.recordingCodec
+        capture.pipWidth       = pipWidth
+        capture.recordingCodec = settings.recordingCodec
         capture.applyFrontCameraMirror()
         UIApplication.shared.isIdleTimerDisabled = settings.screenAlwaysOn
     }
@@ -1282,6 +1201,31 @@ class _PreviewUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         if let l = currentLayer, l.superlayer === self.layer { l.frame = bounds }
+    }
+}
+
+// MARK: - Document export sheet
+
+struct DocumentExportSheet: UIViewControllerRepresentable {
+    let url: URL
+    let onDone: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onDone: onDone) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onDone: () -> Void
+        init(onDone: @escaping () -> Void) { self.onDone = onDone }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onDone() }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onDone() }
     }
 }
 

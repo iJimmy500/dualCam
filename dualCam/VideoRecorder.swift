@@ -343,9 +343,7 @@ class VideoRecorder {
         
         var renderSize = CGSize(width: dispW, height: dispH)
         
-        if layout == .splitH || layout == .splitV {
-            renderSize = CGSize(width: dispW, height: dispW)
-        } else if layout == .spotH {
+        if layout == .spotH {
             renderSize = CGSize(width: dispW, height: dispW * 1.25)
         } else if layout == .pip, let ratio = aspectRatio?.ratio {
             let targetH = dispW / ratio
@@ -368,14 +366,11 @@ class VideoRecorder {
 
         switch layout {
         case .pip:
-            // Main fill-scales to cover the canvas (overflow clips at canvas edges).
             mainFinalTransform = fillTransform(naturalSize: mainNatural,
                                                preferredTransform: mainTransform,
                                                into: CGRect(origin: .zero, size: renderSize))
-            // Pip slot sized to pip's natural ratio → fill == exact fit (no bars, no bleed).
             let pipW    = renderSize.width * pipWidthFraction
             let rawPipH = pipW * (pipDisp.height / max(pipDisp.width, 1))
-            // Circle requires square rect so ovalIn: produces a true circle, not an ellipse
             let pipH    = pipShape == .circle ? pipW : rawPipH
             let margin  = renderSize.width * 0.025
             let halfW   = pipW / 2 + margin
@@ -387,30 +382,6 @@ class VideoRecorder {
             pipFinalTransform = fillTransform(naturalSize: pipNatural,
                                               preferredTransform: pipTransform,
                                               into: pipRect)
-
-        case .splitH:
-            // Both tracks fill-scale into their half. Main's downward overflow is
-            // naturally overwritten by the pip track (rendered on top, layer order below).
-            let half = (renderSize.height - gap) / 2
-            mainFinalTransform = fillTransform(naturalSize: mainNatural,
-                                               preferredTransform: mainTransform,
-                                               into: CGRect(x: 0, y: 0,
-                                                            width: renderSize.width, height: half))
-            pipFinalTransform  = fillTransform(naturalSize: pipNatural,
-                                               preferredTransform: pipTransform,
-                                               into: CGRect(x: 0, y: half + gap,
-                                                            width: renderSize.width, height: half))
-
-        case .splitV:
-            let half = (renderSize.width - gap) / 2
-            mainFinalTransform = fillTransform(naturalSize: mainNatural,
-                                               preferredTransform: mainTransform,
-                                               into: CGRect(x: 0, y: 0,
-                                                            width: half, height: renderSize.height))
-            pipFinalTransform  = fillTransform(naturalSize: pipNatural,
-                                               preferredTransform: pipTransform,
-                                               into: CGRect(x: half + gap, y: 0,
-                                                            width: half, height: renderSize.height))
 
         case .spotH:
             let mainH  = (renderSize.height - gap) * 0.65
@@ -819,32 +790,13 @@ class DualCamVideoCompositor: NSObject, AVVideoCompositing {
                 finalImage = final.outputImage!.cropped(to: renderRect)
 
             } else {
-                // Split / Spotlight: crop each image to its own slot then composite over black.
-                // CISourceOverCompositing with a full-canvas crop would let the opaque pip frame
-                // cover main entirely — slot-cropping ensures they don't overlap.
+                // Spotlight: crop each image to its own slot then composite over black.
                 let gap: CGFloat = 4
-                let mainSlot: CGRect
-                let pipSlot: CGRect
                 let W = instr.renderSize.width
                 let H2 = instr.renderSize.height
-
-                switch instr.layoutMode {
-                case .splitH:
-                    let half = (H2 - gap) / 2
-                    mainSlot = CGRect(x: 0, y: 0,          width: W, height: half)
-                    pipSlot  = CGRect(x: 0, y: half + gap,  width: W, height: half)
-                case .splitV:
-                    let half = (W - gap) / 2
-                    mainSlot = CGRect(x: 0,          y: 0, width: half, height: H2)
-                    pipSlot  = CGRect(x: half + gap, y: 0, width: half, height: H2)
-                case .spotH:
-                    let mainH = (H2 - gap) * 0.65
-                    mainSlot = CGRect(x: 0, y: 0,           width: W, height: mainH)
-                    pipSlot  = CGRect(x: 0, y: mainH + gap, width: W, height: H2 - mainH - gap)
-                default:
-                    mainSlot = renderRect
-                    pipSlot  = renderRect
-                }
+                let mainH = (H2 - gap) * 0.65
+                let mainSlot = CGRect(x: 0, y: 0,           width: W, height: mainH)
+                let pipSlot  = CGRect(x: 0, y: mainH + gap, width: W, height: H2 - mainH - gap)
 
                 let black = CIImage(color: .black).cropped(to: renderRect)
                 let mainCropped = mainImage.cropped(to: mainSlot)

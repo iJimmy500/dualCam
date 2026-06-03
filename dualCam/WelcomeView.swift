@@ -94,13 +94,14 @@ struct WelcomeView: View {
 
     private var featuresSection: some View {
         VStack(spacing: 14) {
-            featureRow(icon: "camera.badge.ellipsis", text: "Record from multiple cameras simultaneously")
-            featureRow(icon: "rectangle.split.2x1",   text: "Choose from PiP, split, or spotlight layouts")
+            featureRow(icon: "camera.badge.ellipsis",          text: "Record from multiple cameras simultaneously")
+            featureRow(icon: "pip",                            text: "PiP or Spotlight, choose your layout")
+            featureRow(icon: "folder.badge.plus",              text: "Save to Photos or pick a Files destination")
         }
     }
 
     private func featureRow(icon: String, text: String) -> some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: icon)
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.white.opacity(0.75))
@@ -109,9 +110,11 @@ struct WelcomeView: View {
             Text(text)
                 .font(.system(size: 15))
                 .foregroundStyle(.white.opacity(0.8))
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
         .padding(12)
+        .frame(maxWidth: .infinity)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
