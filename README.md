@@ -1,7 +1,7 @@
-# dualCam — iOS Dual-Camera Capture
+# dualCam: iOS Dual-Camera Capture
 
 Quick story: 
-I recently went to a graduation and everyone had the iPhone 17 and was enjoying the dual capture feature, I thought to myself "this doesnt need to be gatekept to just the 17" so i built my own version that runs on any device that supports iOS 18 and beyond using claude and my swift brainpower. #Suckit apple
+I recently went to a graduation and everyone had the iPhone 17 and was enjoying the dual capture feature, I thought to myself "this doesnt need to be gatekept to just the 17" so i built my own version that runs on any device that supports iOS 18 and beyond using claude and my swift brainpower. #suckit apple
 
 This is an open-source iOS camera application that captures simultaneous video feeds from multiple cameras (front/rear or multiple rear cameras), offering real-time custom layouts and optional raw feed storage.
 

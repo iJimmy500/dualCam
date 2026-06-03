@@ -32,12 +32,17 @@ final class SystemMonitor: ObservableObject {
     
     var powerOptimizationMessage: String? {
         if lowPowerModeEnabled {
-            return "Low Power Mode is on. Some features may be limited to preserve battery."
+            return "Low Power Mode is on. Some camera features may be limited to preserve battery."
         }
         if batteryLevel < 0.15 {
             return "Battery is low (\(Int(batteryLevel * 100))%). Consider reducing video quality."
         }
         return nil
+    }
+    
+    var shouldRestrictProCameras: Bool {
+        // In Low Power Mode or severe thermal conditions, restrict access to telephoto
+        return lowPowerModeEnabled || thermalState.isAtLeastSevere
     }
     
     var recommendedCodec: RecordingCodec {
