@@ -229,25 +229,38 @@ struct CameraView: View {
         }
     }
 
-    // Cameras sandwiched between opaque top/bottom bars — used for spotlight layout.
-    // The cameras occupy exactly the space between the bars so nothing is hidden behind chrome.
+    // Spotlight layout — cameras fill the screen, bars float on top with gradients (same as PiP).
     @ViewBuilder
     private func splitLayoutContent(geo: GeometryProxy) -> some View {
-        VStack(spacing: 0) {
-            topBar
-                .padding(.top, geo.safeAreaInsets.top)
-                .frame(maxWidth: .infinity)
-                .background(Color.black)
-
+        ZStack {
             spotlightView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
 
-            bottomBar(geo: geo)
-                .frame(maxWidth: .infinity)
-                .background(Color.black.opacity(0.92).ignoresSafeArea(edges: .bottom))
+            if settings.showGridOverlay {
+                gridOverlay.transition(.opacity)
+            }
+
+            VStack(spacing: 0) {
+                topBar
+                    .background(
+                        LinearGradient(
+                            colors: [.black.opacity(0.6), .clear],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                        .ignoresSafeArea()
+                    )
+                Spacer()
+                bottomBar(geo: geo)
+                    .background(
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(0.7)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                        .ignoresSafeArea(edges: .bottom)
+                    )
+            }
+            .padding(.top, geo.safeAreaInsets.top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
     }
 
     // Full-screen main preview with tap/zoom gestures
@@ -282,19 +295,45 @@ struct CameraView: View {
     // MARK: - Spotlight layout view
 
     private func spotlightView() -> some View {
-        GeometryReader { inner in
-            VStack(spacing: 2) {
+        GeometryReader { outer in
+            let gap = settings.spotlightGap.points
+            let mainFrac = settings.spotlightSplit.mainFraction
+            let mainH = (outer.size.height - gap) * mainFrac
+            let pipH  = outer.size.height - mainH - gap
+            VStack(spacing: gap) {
                 PreviewPlaceholder(layer: mainLayer)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: inner.size.height * 0.65)
+                    .frame(width: outer.size.width, height: mainH)
                     .clipped()
                     .onTapGesture(count: 2) {
                         haptic()
+                        if settings.zoomResetOnSwap { capture.setZoom(1.0); lastZoomFactor = 1.0 }
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
                     }
+                    .onTapGesture(count: 1) { location in
+                        capture.setFocus(at: location, in: mainLayer)
+                    }
+                    .gesture(
+                        MagnifyGesture()
+                            .onChanged { value in
+                                guard captureMode == .photo else { return }
+                                let delta = value.magnification / zoomGestureMagnification
+                                zoomGestureMagnification = value.magnification
+                                capture.setZoom(lastZoomFactor * delta)
+                            }
+                            .onEnded { _ in
+                                guard captureMode == .photo else { return }
+                                lastZoomFactor = capture.zoom
+                                zoomGestureMagnification = 1.0
+                            }
+                    )
                 PreviewPlaceholder(layer: pipLayer)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: outer.size.width, height: pipH)
                     .clipped()
+                    .onTapGesture(count: 2) {
+                        haptic()
+                        if settings.zoomResetOnSwap { capture.setZoom(1.0); lastZoomFactor = 1.0 }
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { capture.swapCameras() }
+                    }
             }
         }
     }
@@ -352,8 +391,7 @@ struct CameraView: View {
 
     private func bottomBar(geo: GeometryProxy) -> some View {
         VStack(spacing: 0) {
-            // Zoom only makes sense in PiP where there's one dominant full-screen camera
-            if capture.supportsZoom && activeLayout == .pip {
+            if capture.supportsZoom {
                 zoomControl
                     .padding(.bottom, 20)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))

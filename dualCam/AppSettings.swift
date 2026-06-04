@@ -30,6 +30,36 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     var id: String { self.rawValue }
 }
 
+enum SpotlightSplit: String, CaseIterable, Identifiable {
+    case half     = "50/50"
+    case slight   = "60/40"
+    case standard = "65/35"
+    case major    = "70/30"
+    var id: String { rawValue }
+    var mainFraction: CGFloat {
+        switch self {
+        case .half:     return 0.50
+        case .slight:   return 0.60
+        case .standard: return 0.65
+        case .major:    return 0.70
+        }
+    }
+}
+
+enum SpotlightGap: String, CaseIterable, Identifiable {
+    case none  = "None"
+    case thin  = "Thin"
+    case thick = "Thick"
+    var id: String { rawValue }
+    var points: CGFloat {
+        switch self {
+        case .none:  return 0
+        case .thin:  return 4
+        case .thick: return 12
+        }
+    }
+}
+
 enum RecordingCodec: String, CaseIterable, Identifiable {
     case h264        = "Standard"
     case hevcSafe    = "Efficient"
@@ -72,8 +102,10 @@ final class AppSettings: ObservableObject {
     @AppStorage("captureTimer")      var captureTimer      = 0         // 0, 3, 10 seconds
     @AppStorage("pipFrameStyle")     var pipFrameStyleRaw  = PipFrameStyle.glass.rawValue
     @AppStorage("pipFrameColor")     var pipFrameColorRaw  = PipFrameColor.white.rawValue
-    @AppStorage("pipShape")          var pipShapeRaw       = PipShape.roundedRect.rawValue
-    @AppStorage("videoQuality")      var videoQualityRaw   = VideoQuality.medium.rawValue
+    @AppStorage("pipShape")          var pipShapeRaw           = PipShape.roundedRect.rawValue
+    @AppStorage("videoQuality")      var videoQualityRaw       = VideoQuality.medium.rawValue
+    @AppStorage("spotlightSplit")    var spotlightSplitRaw     = SpotlightSplit.standard.rawValue
+    @AppStorage("spotlightGap")      var spotlightGapRaw       = SpotlightGap.thin.rawValue
 
     // After capture
     @AppStorage("showCapturePreview")  var showCapturePreview  = true
@@ -103,6 +135,12 @@ final class AppSettings: ObservableObject {
     @AppStorage("showStorageWarnings") var showStorageWarnings = true
     @AppStorage("autoCleanTempFiles")  var autoCleanTempFiles  = true
     
+    // Audio
+    @AppStorage("mixAudioWithMusic")  var mixAudioWithMusic  = true
+
+    // Notifications
+    @AppStorage("notifyOnSave")       var notifyOnSave       = true
+
     // Onboarding
     @AppStorage("hasSeenWelcome")     var hasSeenWelcome     = false
 
@@ -132,6 +170,14 @@ final class AppSettings: ObservableObject {
     var videoQuality: VideoQuality {
         get { VideoQuality(rawValue: videoQualityRaw) ?? .medium }
         set { videoQualityRaw = newValue.rawValue }
+    }
+    var spotlightSplit: SpotlightSplit {
+        get { SpotlightSplit(rawValue: spotlightSplitRaw) ?? .standard }
+        set { spotlightSplitRaw = newValue.rawValue }
+    }
+    var spotlightGap: SpotlightGap {
+        get { SpotlightGap(rawValue: spotlightGapRaw) ?? .thin }
+        set { spotlightGapRaw = newValue.rawValue }
     }
     var recordingCodec: RecordingCodec {
         get { RecordingCodec(rawValue: recordingCodecRaw) ?? .hevcSafe }

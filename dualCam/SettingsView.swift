@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject var capture: CaptureManager
@@ -17,6 +18,7 @@ struct SettingsView: View {
                 cameraSection
                 captureSection
                 generalSection
+                notificationsSection
                 experimentalSection
                 developerSection
                 aboutSection
@@ -101,9 +103,15 @@ struct SettingsView: View {
     private var cameraSection: some View {
         Section("Camera") {
             layoutModeRows
-            pipShapeRows
-            frameStyleRows
-            frameColorRow
+            if settings.layoutMode == .pip {
+                pipShapeRows
+                frameStyleRows
+                frameColorRow
+            }
+            if settings.layoutMode == .spotH {
+                spotlightSplitRow
+                spotlightGapRow
+            }
             Picker("Flash", selection: Binding(get: { capture.flashMode },
                                                set: { capture.setFlashMode($0) })) {
                 Label("Off",  systemImage: "bolt.slash").tag(AVCaptureDevice.FlashMode.off)
@@ -160,8 +168,6 @@ struct SettingsView: View {
             }
             .padding(.bottom, 2)
         }
-        .opacity(settings.layoutMode == .pip ? 1 : 0.3)
-        .animation(.easeInOut(duration: 0.18), value: settings.layoutMode == .pip)
     }
 
     private func shapeCell(_ shape: PipShape) -> some View {
@@ -236,6 +242,61 @@ struct SettingsView: View {
         .animation(.easeInOut(duration: 0.18), value: settings.pipFrameStyle == .none)
     }
 
+    private var spotlightSplitRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Split Ratio").font(.subheadline).foregroundStyle(.secondary).padding(.top, 2)
+            let cols = [GridItem(.flexible()), GridItem(.flexible()),
+                        GridItem(.flexible()), GridItem(.flexible())]
+            LazyVGrid(columns: cols, spacing: 8) {
+                ForEach(SpotlightSplit.allCases) { split in
+                    let active = settings.spotlightSplit == split
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        settings.spotlightSplit = split
+                    } label: {
+                        Text(split.rawValue)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(active ? Color.blue : Color.secondary)
+                            .frame(maxWidth: .infinity).padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(active ? Color.blue.opacity(0.15) : Color.white.opacity(0.06)))
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(active ? Color.blue.opacity(0.5) : Color.clear, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 2)
+        }
+    }
+
+    private var spotlightGapRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Divider Gap").font(.subheadline).foregroundStyle(.secondary).padding(.top, 2)
+            let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+            LazyVGrid(columns: cols, spacing: 8) {
+                ForEach(SpotlightGap.allCases) { gap in
+                    let active = settings.spotlightGap == gap
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        settings.spotlightGap = gap
+                    } label: {
+                        Text(gap.rawValue)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(active ? Color.blue : Color.secondary)
+                            .frame(maxWidth: .infinity).padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(active ? Color.blue.opacity(0.15) : Color.white.opacity(0.06)))
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(active ? Color.blue.opacity(0.5) : Color.clear, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 2)
+        }
+    }
+
     private func frameColorSwatch(_ fc: PipFrameColor) -> some View {
         let active = settings.pipFrameColor == fc
         return Button {
@@ -299,6 +360,12 @@ struct SettingsView: View {
 
     private var generalSection: some View {
         Section("General") {
+            settingsRow("Keep Music Playing", icon: "music.note", note: "Music continues while recording; may bleed into mic") {
+                Toggle("", isOn: $settings.mixAudioWithMusic).labelsHidden()
+                    .onChange(of: settings.mixAudioWithMusic) { _, _ in
+                        capture.reapplyAudioSession()
+                    }
+            }
             settingsRow("Haptic Feedback", icon: "hand.tap", note: "Vibrate on shutter & countdown") {
                 Toggle("", isOn: $settings.hapticFeedback).labelsHidden()
             }
@@ -355,6 +422,25 @@ struct SettingsView: View {
                 Text(settings.saveDestination.note)
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(.bottom, 2)
+            }
+        }
+    }
+
+    // MARK: - Notifications
+
+    private var notificationsSection: some View {
+        Section("Notifications") {
+            settingsRow("Save Notifications", icon: "bell.badge", note: "Notify when a photo or video is saved") {
+                Toggle("", isOn: $settings.notifyOnSave).labelsHidden()
+                    .onChange(of: settings.notifyOnSave) { _, enabled in
+                        if enabled {
+                            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                                if !granted {
+                                    DispatchQueue.main.async { settings.notifyOnSave = false }
+                                }
+                            }
+                        }
+                    }
             }
         }
     }

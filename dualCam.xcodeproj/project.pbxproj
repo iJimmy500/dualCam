@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -13,7 +13,9 @@
 		164178942FCAA52300B83EEB /* StorageDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 164178932FCAA52300B83EEB /* StorageDemoView.swift */; };
 		1641789A2FCAABF800B83EEB /* SystemMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 164178992FCAABF800B83EEB /* SystemMonitor.swift */; };
 		1641789C2FCAAC0D00B83EEB /* BackgroundManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1641789B2FCAAC0D00B83EEB /* BackgroundManager.swift */; };
-		AABBCC2233445566778899AA /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCC1122334455667788AA /* WelcomeView.swift */; };
+		16557B8E2FD10E0600B4DEF5 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16557B8D2FD10E0600B4DEF5 /* WidgetKit.framework */; };
+		16557B902FD10E0600B4DEF5 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16557B8F2FD10E0600B4DEF5 /* SwiftUI.framework */; };
+		16557B9F2FD10E0A00B4DEF5 /* dualCamWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 16557B8B2FD10E0500B4DEF5 /* dualCamWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		16A93E082FC957C00023BC20 /* ProcessingProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A93E072FC957C00023BC20 /* ProcessingProgressView.swift */; };
 		16A93E0A2FC957E90023BC20 /* VideoProcessingActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A93E092FC957E90023BC20 /* VideoProcessingActivity.swift */; };
 		16A93E0C2FC958F00023BC20 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A93E0B2FC958F00023BC20 /* AppLogger.swift */; };
@@ -29,10 +31,35 @@
 		949D6869A4094BA296FD3829 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F48F1E43178C42B284964AE7 /* ContentView.swift */; };
 		A72B554CEA674DC7A67ABF67 /* MediaDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 616AE7B3601D4A058E6657C4 /* MediaDetailView.swift */; };
 		AA1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift */; };
+		AABBCC2233445566778899AA /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCC1122334455667788AA /* WelcomeView.swift */; };
 		B56E665D42264B82B93BF514 /* VideoRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDF249D8AFF480DA0D4F73A /* VideoRecorder.swift */; };
 		CC1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift */; };
 		EE1E2F3A4B5C6D7E8F9A0B1C /* CapturePreviewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1F2A3B4C5D6E7F8A9B0C1D /* CapturePreviewModal.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		16557B9D2FD10E0A00B4DEF5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 16B1C28DD54844AF9E30A88F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 16557B8A2FD10E0500B4DEF5;
+			remoteInfo = dualCamWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		16557BA02FD10E0A00B4DEF5 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				16557B9F2FD10E0A00B4DEF5 /* dualCamWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		080BD05C90AE49B1B1CE9118 /* GalleryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryView.swift; sourceTree = "<group>"; };
@@ -42,7 +69,9 @@
 		164178932FCAA52300B83EEB /* StorageDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageDemoView.swift; sourceTree = "<group>"; };
 		164178992FCAABF800B83EEB /* SystemMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMonitor.swift; sourceTree = "<group>"; };
 		1641789B2FCAAC0D00B83EEB /* BackgroundManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundManager.swift; sourceTree = "<group>"; };
-		AABBCC1122334455667788AA /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
+		16557B8B2FD10E0500B4DEF5 /* dualCamWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = dualCamWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		16557B8D2FD10E0600B4DEF5 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		16557B8F2FD10E0600B4DEF5 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		16A93E072FC957C00023BC20 /* ProcessingProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessingProgressView.swift; sourceTree = "<group>"; };
 		16A93E092FC957E90023BC20 /* VideoProcessingActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProcessingActivity.swift; sourceTree = "<group>"; };
 		16A93E0B2FC958F00023BC20 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
@@ -56,6 +85,7 @@
 		616AE7B3601D4A058E6657C4 /* MediaDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaDetailView.swift; sourceTree = "<group>"; };
 		628F171DE9F0493AB71FD8F4 /* CaptureManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureManager.swift; sourceTree = "<group>"; };
 		9E1F9CB4D3BA4C7E9F62960C /* MediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaItem.swift; sourceTree = "<group>"; };
+		AABBCC1122334455667788AA /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		AABBCCDDEEFF00112233445566 /* QuickSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickSettingsPanel.swift; sourceTree = "<group>"; };
 		BB1B2C3D4E5F6A7B8C9D0E1F /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		DD1D2E3F4A5B6C7D8E9F0A1B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -64,7 +94,30 @@
 		FF1F2A3B4C5D6E7F8A9B0C1D /* CapturePreviewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturePreviewModal.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		16557BA32FD10E0A00B4DEF5 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 16557B8A2FD10E0500B4DEF5 /* dualCamWidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		16557B912FD10E0600B4DEF5 /* dualCamWidget */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (16557BA32FD10E0A00B4DEF5 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = dualCamWidget; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXFrameworksBuildPhase section */
+		16557B882FD10E0500B4DEF5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				16557B902FD10E0600B4DEF5 /* SwiftUI.framework in Frameworks */,
+				16557B8E2FD10E0600B4DEF5 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		509A702B9BC74E63A0E6410D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -75,6 +128,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		16557B8C2FD10E0600B4DEF5 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				16557B8D2FD10E0600B4DEF5 /* WidgetKit.framework */,
+				16557B8F2FD10E0600B4DEF5 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		4B4AC47E2CD24EC8B0A39C2E /* dualCam */ = {
 			isa = PBXGroup;
 			children = (
@@ -112,6 +174,8 @@
 			isa = PBXGroup;
 			children = (
 				4B4AC47E2CD24EC8B0A39C2E /* dualCam */,
+				16557B912FD10E0600B4DEF5 /* dualCamWidget */,
+				16557B8C2FD10E0600B4DEF5 /* Frameworks */,
 				F08CFFF6CB934136ACACC415 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -120,6 +184,7 @@
 			isa = PBXGroup;
 			children = (
 				18706739AC1D4BF3903FD40C /* dualCam.app */,
+				16557B8B2FD10E0500B4DEF5 /* dualCamWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -127,6 +192,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		16557B8A2FD10E0500B4DEF5 /* dualCamWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 16557BA42FD10E0A00B4DEF5 /* Build configuration list for PBXNativeTarget "dualCamWidgetExtension" */;
+			buildPhases = (
+				16557B872FD10E0500B4DEF5 /* Sources */,
+				16557B882FD10E0500B4DEF5 /* Frameworks */,
+				16557B892FD10E0500B4DEF5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				16557B912FD10E0600B4DEF5 /* dualCamWidget */,
+			);
+			name = dualCamWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = dualCamWidgetExtension;
+			productReference = 16557B8B2FD10E0500B4DEF5 /* dualCamWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		2E7A08B3CCF04F6484A19938 /* dualCam */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9B3E102B6FCF4666B31C0783 /* Build configuration list for PBXNativeTarget "dualCam" */;
@@ -134,10 +221,12 @@
 				36B07772A3524F3BBC60B6F2 /* Sources */,
 				509A702B9BC74E63A0E6410D /* Frameworks */,
 				DE0B531709794592A8C31ECE /* Resources */,
+				16557BA02FD10E0A00B4DEF5 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				16557B9E2FD10E0A00B4DEF5 /* PBXTargetDependency */,
 			);
 			name = dualCam;
 			productName = dualCam;
@@ -151,9 +240,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1500;
+				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
+					16557B8A2FD10E0500B4DEF5 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
 					2E7A08B3CCF04F6484A19938 = {
 						CreatedOnToolsVersion = 15.0;
 					};
@@ -172,11 +264,19 @@
 			projectRoot = "";
 			targets = (
 				2E7A08B3CCF04F6484A19938 /* dualCam */,
+				16557B8A2FD10E0500B4DEF5 /* dualCamWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		16557B892FD10E0500B4DEF5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DE0B531709794592A8C31ECE /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -189,6 +289,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		16557B872FD10E0500B4DEF5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		36B07772A3524F3BBC60B6F2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -221,10 +328,19 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		16557B9E2FD10E0A00B4DEF5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 16557B8A2FD10E0500B4DEF5 /* dualCamWidgetExtension */;
+			targetProxy = 16557B9D2FD10E0A00B4DEF5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		0E1E5274D2F44B989712EA50 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSET_CATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSET_CATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -240,6 +356,102 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		16557BA12FD10E0A00B4DEF5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = dualCamWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = dualCamWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.dualCam.dualCamWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		16557BA22FD10E0A00B4DEF5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = dualCamWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = dualCamWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.dualCam.dualCamWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
@@ -338,6 +550,7 @@
 		9552429AAEAB43338F5FCA6C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSET_CATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSET_CATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -359,6 +572,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		16557BA42FD10E0A00B4DEF5 /* Build configuration list for PBXNativeTarget "dualCamWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				16557BA12FD10E0A00B4DEF5 /* Debug */,
+				16557BA22FD10E0A00B4DEF5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		1C28301A3858424BAABA3D68 /* Build configuration list for PBXProject "dualCam" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
