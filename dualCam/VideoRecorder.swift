@@ -292,6 +292,8 @@ class VideoRecorder {
         frameColor: PipFrameColor = .white,
         pipShape: PipShape = .roundedRect,
         quality: VideoQuality = .medium,
+        spotlightSplit: SpotlightSplit = .standard,
+        spotlightGap: SpotlightGap = .thin,
         progressCallback: ((Double) -> Void)? = nil
     ) async -> URL? {
         let primaryAsset   = AVURLAsset(url: primary)
@@ -341,11 +343,12 @@ class VideoRecorder {
         let dispW = (mainPts.map(\.x).max()! - mainPts.map(\.x).min()!)
         let dispH = (mainPts.map(\.y).max()! - mainPts.map(\.y).min()!)
         
+        AppLogger.shared.log("  naturalSize: \(mainNatural.width)×\(mainNatural.height)")
+        AppLogger.shared.log("  dispW=\(dispW) dispH=\(dispH)")
+
         var renderSize = CGSize(width: dispW, height: dispH)
-        
-        if layout == .spotH {
-            renderSize = CGSize(width: dispW, height: dispW * 1.25)
-        } else if layout == .pip, let ratio = aspectRatio?.ratio {
+
+        if layout == .pip, let ratio = aspectRatio?.ratio {
             let targetH = dispW / ratio
             if targetH <= dispH {
                 renderSize = CGSize(width: dispW, height: targetH)
@@ -359,7 +362,7 @@ class VideoRecorder {
         // so fill transform == exact fit (no letterbox bars, no overflow).
         let pipDisp = displaySize(naturalSize: pipNatural, transform: pipTransform)
 
-        let gap: CGFloat = 4
+        let gap: CGFloat = spotlightGap.points
         let mainFinalTransform: CGAffineTransform
         let pipFinalTransform: CGAffineTransform
         var videoPipRect: CGRect? = nil   // only set for .pip — used for frame overlay
@@ -384,7 +387,7 @@ class VideoRecorder {
                                               into: pipRect)
 
         case .spotH:
-            let mainH  = (renderSize.height - gap) * 0.65
+            let mainH  = (renderSize.height - gap) * spotlightSplit.mainFraction
             let pipH   = renderSize.height - mainH - gap
             mainFinalTransform = fillTransform(naturalSize: mainNatural,
                                                preferredTransform: mainTransform,
@@ -459,7 +462,9 @@ class VideoRecorder {
             frameStyle:    frameStyle,
             frameColor:    frameColor,
             pipShape:      pipShape,
-            cornerRadius:  pipCornerRadius
+            cornerRadius:  pipCornerRadius,
+            spotlightMainFraction: spotlightSplit.mainFraction,
+            spotlightGapPoints:    spotlightGap.points
         )
 
         let videoComposition = AVMutableVideoComposition()
@@ -467,6 +472,7 @@ class VideoRecorder {
         videoComposition.instructions  = [instruction]
         videoComposition.frameDuration = CMTime(value: 1, timescale: highFrameRate ? 60 : 30)
         videoComposition.renderSize    = renderSize
+        AppLogger.shared.log("  renderSize: \(renderSize.width)×\(renderSize.height)")
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("dualcam_\(UUID().uuidString).mov")
@@ -617,13 +623,16 @@ class DualCamVideoCompositionInstruction: NSObject, AVVideoCompositionInstructio
     let frameColor:  PipFrameColor
     let pipShape:    PipShape
     let cornerRadius: CGFloat
+    let spotlightMainFraction: CGFloat
+    let spotlightGapPoints: CGFloat
 
     init(timeRange: CMTimeRange,
          mainTrackID: CMPersistentTrackID, pipTrackID: CMPersistentTrackID,
          layoutMode: LayoutMode, renderSize: CGSize,
          pipRect: CGRect?, mainTransform: CGAffineTransform, pipTransform: CGAffineTransform,
          frameStyle: PipFrameStyle, frameColor: PipFrameColor, pipShape: PipShape,
-         cornerRadius: CGFloat) {
+         cornerRadius: CGFloat,
+         spotlightMainFraction: CGFloat = 0.65, spotlightGapPoints: CGFloat = 4) {
         self.timeRange = timeRange
         self.mainTrackID = mainTrackID; self.pipTrackID = pipTrackID
         self.layoutMode = layoutMode;   self.renderSize = renderSize
@@ -636,6 +645,8 @@ class DualCamVideoCompositionInstruction: NSObject, AVVideoCompositionInstructio
         self.mainTransform = mainTransform; self.pipTransform = pipTransform
         self.frameStyle = frameStyle; self.frameColor = frameColor; self.pipShape = pipShape
         self.cornerRadius = cornerRadius
+        self.spotlightMainFraction = spotlightMainFraction
+        self.spotlightGapPoints = spotlightGapPoints
         self.requiredSourceTrackIDs = [NSNumber(value: mainTrackID), NSNumber(value: pipTrackID)]
         super.init()
     }
@@ -791,10 +802,10 @@ class DualCamVideoCompositor: NSObject, AVVideoCompositing {
 
             } else {
                 // Spotlight: crop each image to its own slot then composite over black.
-                let gap: CGFloat = 4
+                let gap: CGFloat = instr.spotlightGapPoints
                 let W = instr.renderSize.width
                 let H2 = instr.renderSize.height
-                let mainH = (H2 - gap) * 0.65
+                let mainH = (H2 - gap) * instr.spotlightMainFraction
                 let mainSlot = CGRect(x: 0, y: 0,           width: W, height: mainH)
                 let pipSlot  = CGRect(x: 0, y: mainH + gap, width: W, height: H2 - mainH - gap)
 

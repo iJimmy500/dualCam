@@ -23,6 +23,8 @@ struct ProcessingTask: Identifiable {
     let pipShape: PipShape
     let quality: VideoQuality
     let pair: CameraPair
+    let spotlightSplit: SpotlightSplit
+    let spotlightGap: SpotlightGap
     var progress: Double = 0.0
     var status: String = "Queued"
     
@@ -94,6 +96,12 @@ class CaptureManager: NSObject, ObservableObject {
     var videoQuality: VideoQuality {
         VideoQuality(rawValue: UserDefaults.standard.string(forKey: "videoQuality") ?? "") ?? .medium
     }
+    var spotlightSplit: SpotlightSplit {
+        SpotlightSplit(rawValue: UserDefaults.standard.string(forKey: "spotlightSplit") ?? "") ?? .standard
+    }
+    var spotlightGap: SpotlightGap {
+        SpotlightGap(rawValue: UserDefaults.standard.string(forKey: "spotlightGap") ?? "") ?? .thin
+    }
     var autoSaveRawFeeds: Bool {
         UserDefaults.standard.bool(forKey: "autoSaveRawFeeds")
     }
@@ -103,7 +111,7 @@ class CaptureManager: NSObject, ObservableObject {
     @Published var pipWidth: CGFloat            = 108
     @Published var displayWidth: CGFloat        = UIScreen.main.bounds.width
     @Published var pendingExportURL: URL?       = nil
-    @Published var flashMode: AVCaptureDevice.FlashMode = .auto {
+    @Published var flashMode: AVCaptureDevice.FlashMode = .off {
         didSet { UserDefaults.standard.set(flashMode.rawValue, forKey: "flashMode") }
     }
     @Published var flashFired = false
@@ -151,6 +159,7 @@ class CaptureManager: NSObject, ObservableObject {
     
     // Live Activity support
     private let liveActivityManager = LiveActivityManager()
+    private var isAppInBackground = false
     static var maxRecordingSeconds: Int {
         let v = UserDefaults.standard.integer(forKey: "recordingLimitSeconds")
         return v > 0 ? v : 150
@@ -195,7 +204,12 @@ class CaptureManager: NSObject, ObservableObject {
 
     private func setupSystemMonitoring() {
         systemMonitor.startMonitoring()
-        
+
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground),
+                                               name: UIApplication.willEnterForegroundNotification, object: nil)
+
         // Monitor thermal state changes
         systemMonitor.$thermalState
             .receive(on: DispatchQueue.main)
@@ -216,6 +230,18 @@ class CaptureManager: NSObject, ObservableObject {
         updateSystemWarnings()
     }
     
+    @objc private func appDidEnterBackground() {
+        isAppInBackground = true
+        if isProcessingVideo {
+            liveActivityManager.startVideoProcessingActivity(videosInQueue: processingQueue.count + 1)
+        }
+    }
+
+    @objc private func appWillEnterForeground() {
+        isAppInBackground = false
+        liveActivityManager.cancelActivity()
+    }
+
     private func handleThermalStateChange(_ thermalState: ProcessInfo.ThermalState) {
         logger.log("CaptureManager: Thermal state changed to \(thermalState.description)")
         
@@ -323,12 +349,17 @@ class CaptureManager: NSObject, ObservableObject {
 
     // The default audio session category (.soloAmbient) doesn't allow recording,
     // causing -19224 errors that cascade into camera XPC failures. Configure it first.
+    func reapplyAudioSession() { setupAudioSession() }
+
     private func setupAudioSession() {
         do {
+            let mix = UserDefaults.standard.bool(forKey: "mixAudioWithMusic")
+            var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker]
+            if mix { options.insert(.mixWithOthers) }
             try AVAudioSession.sharedInstance().setCategory(
                 .playAndRecord,
                 mode: .videoRecording,
-                options: [.allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker]
+                options: options
             )
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
@@ -1333,10 +1364,12 @@ class CaptureManager: NSObject, ObservableObject {
 
     private func makeCompositeSpotlight(main: UIImage, pip: UIImage) -> UIImage {
         let W = main.size.width
-        // 4:5 portrait canvas — Instagram-friendly, shows main prominently
-        let H = W * 1.25
-        let gap: CGFloat = max(4, W * 0.004)
-        let mainH    = (H - gap) * 0.65
+        let H = W * (16.0 / 9.0)  // same 9:16 portrait canvas as video export
+        let split = SpotlightSplit(rawValue: UserDefaults.standard.string(forKey: "spotlightSplit") ?? "") ?? .standard
+        let gapSetting = SpotlightGap(rawValue: UserDefaults.standard.string(forKey: "spotlightGap") ?? "") ?? .thin
+        // Scale gap from screen points to image pixels
+        let gap: CGFloat = gapSetting.points * (W / UIScreen.main.bounds.width)
+        let mainH    = (H - gap) * split.mainFraction
         let pipSlotH = H - mainH - gap
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: W, height: H))
         return renderer.image { ctx in
@@ -1411,6 +1444,8 @@ class CaptureManager: NSObject, ObservableObject {
         let snapHFR    = videoCaptureHighFrameRate
         let qual       = videoQuality
         let autoRaw    = autoSaveRawFeeds
+        let spotSplit  = spotlightSplit
+        let spotGap    = spotlightGap
         
         Task {
             guard let urls = await _recorder.stopRecording() else { 
@@ -1440,7 +1475,9 @@ class CaptureManager: NSObject, ObservableObject {
                 frameColor: frmColor,
                 pipShape: frmShape,
                 quality: qual,
-                pair: pair
+                pair: pair,
+                spotlightSplit: spotSplit,
+                spotlightGap: spotGap
             )
             
             if isBackgroundProcessingEnabled {
@@ -1473,15 +1510,17 @@ class CaptureManager: NSObject, ObservableObject {
         
         if inBackground {
             startBackgroundTask()
-            // Start Live Activity for background processing
-            liveActivityManager.startVideoProcessingActivity(videosInQueue: processingQueue.count + 1)
+            // Live Activity only shown when app is actually backgrounded
+            if isAppInBackground {
+                liveActivityManager.startVideoProcessingActivity(videosInQueue: processingQueue.count + 1)
+            }
         }
         
         activeProcessingTask = Task.detached(priority: .userInitiated) {
             await MainActor.run { [weak self] in
                 self?.processingProgress = 0.1
                 self?.processingStatusMessage = "Preparing video merge..."
-                if inBackground {
+                if inBackground, self?.isAppInBackground == true {
                     self?.liveActivityManager.updateProgress(0.1, statusMessage: "Preparing video merge...", videosInQueue: self?.processingQueue.count ?? 0)
                 }
             }
@@ -1499,6 +1538,8 @@ class CaptureManager: NSObject, ObservableObject {
                 frameColor: task.frameColor,
                 pipShape: task.pipShape,
                 quality: task.quality,
+                spotlightSplit: task.spotlightSplit,
+                spotlightGap: task.spotlightGap,
                 progressCallback: { [weak self] progress in
                     Task { @MainActor in
                         guard let self = self else { return }
@@ -1523,7 +1564,7 @@ class CaptureManager: NSObject, ObservableObject {
                         let progressPercent = Int(progress * 100)
                         self.processingStatusMessage = "\(currentMessage)... \(progressPercent)%"
                         
-                        if inBackground {
+                        if inBackground, self.isAppInBackground {
                             self.liveActivityManager.updateProgress(
                                 0.1 + (progress * 0.8),
                                 statusMessage: "\(currentMessage)... \(progressPercent)%",
@@ -1540,7 +1581,7 @@ class CaptureManager: NSObject, ObservableObject {
                 if let merged = merged {
                     self.processingProgress = 0.95
                     self.processingStatusMessage = "Saving to photo library..."
-                    if inBackground {
+                    if inBackground, self.isAppInBackground {
                         self.liveActivityManager.updateProgress(0.95, statusMessage: "Saving to photo library...", videosInQueue: self.processingQueue.count)
                     }
                     
@@ -1585,9 +1626,9 @@ class CaptureManager: NSObject, ObservableObject {
                                 self?.processingProgress = 1.0
                                 self?.processingStatusMessage = "Video saved successfully!"
                                 
-                                if inBackground {
+                                if inBackground, self?.isAppInBackground == true {
                                     self?.liveActivityManager.updateProgress(1.0, statusMessage: "Video saved successfully!", videosInQueue: self?.processingQueue.count ?? 0)
-                                    
+
                                     // Complete Live Activity if queue is empty, otherwise continue
                                     if self?.processingQueue.isEmpty == true {
                                         self?.liveActivityManager.completeActivity()
@@ -1696,6 +1737,7 @@ class CaptureManager: NSObject, ObservableObject {
     }
 
     private func sendSavedNotification(title: String, body: String) {
+        guard UserDefaults.standard.bool(forKey: "notifyOnSave") else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
