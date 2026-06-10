@@ -5,6 +5,8 @@ I recently went to a graduation and everyone had the iPhone 17 and was enjoying 
 
 This is an open-source iOS camera application that captures simultaneous video feeds from multiple cameras (front/rear or multiple rear cameras), offering real-time custom layouts and optional raw feed storage.
 
+> **Android user?** There's a native Android version too — Kotlin, Jetpack Compose, and the Camera2 concurrent-camera API, with the same features. See [`android/README.md`](android/README.md) for the (free, no-account-needed) build instructions.
+
 ## How It's Built
 
 The application is engineered using native Apple frameworks, divided into three core subsystems:
